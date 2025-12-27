@@ -1,6 +1,7 @@
 import sys
 import os
 from src.agents.scanner_agent.scanner import scan_directory
+from src.agents.embedding_agent.embedder import embed_documents
 
 # --- PATH SETUP ---
 # We need to add the project root to Python's system path.
@@ -22,9 +23,17 @@ if __name__ == "__main__":
     This checks if the script is being run directly (not imported).
     """
     try:
-        print("--- 🚀 Starting Document Scanner Agent ---")
+        print("--- 🏁 STARTING PIPELINE ---")
+
+        # Step 1: Scan for new/modified files
+        print("\n--- [STEP 1] SCANNING ---")
         scan_directory(TARGET_FOLDER)
-        print("--- 🏁 Agent Task Finished Successfully ---")
+
+        # Step 2: Generate AI Embeddings
+        print("\n--- [STEP 2] EMBEDDING ---")
+        embed_documents()
+
+        print("\n--- 🎉 PIPELINE FINISHED SUCCESSFULLY ---")
 
     except Exception as e:
-        print(f"❌ Critical Application Error: {e}")
+        print(f"❌ Critical Error: {e}")
