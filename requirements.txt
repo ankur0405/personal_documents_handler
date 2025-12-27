@@ -1,0 +1,5 @@
+lancedb
+pandas
+pydantic
+xxhash       # Extremely fast hashing (faster than MD5/SHA)
+python-magic # For robust file type detection
