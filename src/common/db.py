@@ -33,6 +33,12 @@ class Document(LanceModel):
     last_modified: float
 
     # --- AI FIELDS ---
+    # --- NEW FIELD ---
+    # Stores the raw text extracted from the file. 
+    # Default is empty string so we can scan first, extract later.
+    page_number: int = Field(default=1) # Tracks which page this text belongs to
+    content: str = Field(default="")
+
     # Vector: A list of floats representing the semantic meaning.
     # 384 dimensions is the standard output size for 'all-MiniLM-L6-v2'.
     # We default to a zero-vector so we can insert metadata FIRST, and embed LATER.

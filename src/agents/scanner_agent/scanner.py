@@ -8,7 +8,20 @@ import xxhash
 from typing import List, Optional
 from src.common.db import Document, get_table
 
-SUPPORTED_EXTS = {'.pdf', '.docx', '.txt', '.md', '.png', '.jpg', '.jpeg', '.xls', '.xlsx'}
+# --- CONFIGURATION ---
+SUPPORTED_EXTS = {
+    # Documents
+    '.pdf', '.docx', '.doc', '.txt', '.md', '.rtf',
+    # Spreadsheets
+    '.xls', '.xlsx', '.csv',
+    # Slides
+    '.pptx', '.ppt',
+    # Images (Metadata/Filename only for now, unless we add OCR)
+    '.png', '.jpg', '.jpeg', '.heic',
+    # Web/Code
+    '.html', '.json', '.xml',
+    '.msg'
+}
 BATCH_SIZE = 100
 
 def calculate_file_hash(filepath: str) -> Optional[str]:
