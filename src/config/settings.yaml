@@ -1,0 +1,35 @@
+system:
+  max_workers: 10              # Parallel threads/processes
+  chunk_size: 1000             # Characters per vector chunk (approx 200 words)
+  chunk_overlap: 100           # Overlap to preserve context between chunks
+
+paths:
+  target_folder: "/Volumes/Extreme SSD/Documents"
+  db_path: "data/lancedb_store"
+
+# The Registry: Maps extensions to their handler class
+# This makes the system "discoverable" and decoupled.
+supported_extensions:
+  # Documents
+  .pdf: "PDFExtractor"
+  .docx: "DocxExtractor"
+  .doc: "DocxExtractor"      # Fallback for now
+  .txt: "TextExtractor"
+  .md: "TextExtractor"
+
+  # Data
+  .xlsx: "SpreadsheetExtractor"
+  .xls: "SpreadsheetExtractor"
+  .csv: "SpreadsheetExtractor"
+
+  # Presentations
+  .pptx: "SlideExtractor"
+
+  # Messages
+  .msg: "EmailExtractor"
+
+  # Images (OCR)
+  .png: "ImageExtractor"
+  .jpg: "ImageExtractor"
+  .jpeg: "ImageExtractor"
+  .heic: "ImageExtractor"

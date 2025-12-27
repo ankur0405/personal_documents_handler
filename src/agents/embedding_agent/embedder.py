@@ -1,94 +1,165 @@
-"""
-Module: Embedding Agent (Page-Level Chunking)
-Description: Breaks documents into pages, embeds each page separately, 
-             and saves them as distinct searchable records.
-"""
-
-import torch
 import time
+import os
+import pandas as pd
+from concurrent.futures import ProcessPoolExecutor
 from sentence_transformers import SentenceTransformer
 from src.common.db import get_table
-# Import the new 'extract_pages' generator
-from src.common.content_extractor import extract_pages
+from src.common.factory import ExtractorFactory
+from src.config.loader import SETTINGS
 
 MODEL_NAME = 'all-MiniLM-L6-v2'
-BATCH_SIZE = 64
-MAX_TEXT_PER_PAGE = 1000 # Truncate PER PAGE, not per file.
 
-def get_device():
-    if torch.backends.mps.is_available():
-        return "mps"
-    elif torch.cuda.is_available():
-        return "cuda"
-    else:
-        return "cpu"
+def process_file_wrapper(row_dict):
+    """
+    Worker Function: Extracts content from file.
+    """
+    filename = row_dict['filename']
+    doc_id = row_dict['id']
+    file_path = row_dict['file_path']
+    
+    # Normalize Extension
+    raw_type = str(row_dict['file_type']).lower()
+    file_type = raw_type if raw_type.startswith('.') else f".{raw_type}"
+    
+    extractor = ExtractorFactory.get_extractor(file_type)
+    if not extractor:
+        return []
+
+    chunks = []
+    try:
+        for page_num, content in extractor.extract(file_path):
+            if not content: continue
+
+            chunk_size = SETTINGS['system']['chunk_size']
+            overlap = SETTINGS['system']['chunk_overlap']
+            
+            start = 0
+            while start < len(content):
+                end = start + chunk_size
+                text_slice = content[start:end]
+                
+                embedding_input = f"Filename: {filename} Page: {page_num} Content: {text_slice}"
+                
+                record = row_dict.copy()
+                record['id'] = f"{doc_id}_p{page_num}_{start}" 
+                record['page_number'] = page_num
+                record['content'] = text_slice
+                record['_embedding_input'] = embedding_input 
+                
+                chunks.append(record)
+                
+                start += (chunk_size - overlap)
+                if start >= len(content): break
+            
+    except Exception as e:
+        print(f"❌ [Worker] Error processing {filename}: {e}")
+    
+    return chunks
 
 def embed_documents():
-    device = get_device()
-    print(f"🚀 AI Hardware Accelerator: {device.upper()}")
-    
-    print(f"📥 Loading Model: {MODEL_NAME}...")
-    model = SentenceTransformer(MODEL_NAME, device=device)
-    
-    # 1. Fetch Metadata (The File List)
     table = get_table()
     df = table.to_pandas()
     
-    # We only want unique files. If the DB already has page chunks, we might get duplicates
-    # if we blindly re-run. 
-    # STRATEGY: We assume 'df' contains the Metadata Scans (page_number=1 default).
-    # Since we are doing a "Nuclear Reset" anyway, this simple logic holds.
-    
     if df.empty:
-        print("⚠️  No documents found.")
+        print("⚠️ Database is empty. Waiting for Scanner...")
         return
 
-    print(f"🧠 Chunking and Embedding {len(df)} files...")
-    start_time = time.time()
-
-    texts_to_embed = []
-    chunked_records = []
+    # --- 1. DEDUPLICATION (Self-Healing) ---
+    # If the Scanner inserted the same file path multiple times, keep only one.
+    total_rows = len(df)
+    df_clean = df.drop_duplicates(subset=['file_path'], keep='first')
     
-    for index, row in df.iterrows():
-        # Generator: Returns (1, "text..."), (2, "text...")
-        for page_num, raw_text in extract_pages(row['file_path'], row['file_type']):
-            
-            # Clean text
-            clean_text = raw_text[:MAX_TEXT_PER_PAGE].replace("\n", " ")
-            
-            # Semantic Payload: Include Page Number in the context!
-            # This helps the AI understand "Page 30 of Passport"
-            embedding_input = f"Filename: {row['filename']} Page: {page_num} Content: {clean_text}"
-            texts_to_embed.append(embedding_input)
-            
-            # Create a New Record for this Page
-            new_record = row.to_dict()
-            new_record['id'] = f"{row['id']}_p{page_num}" # Unique ID per page
-            new_record['page_number'] = page_num
-            new_record['content'] = clean_text
-            
-            chunked_records.append(new_record)
+    if len(df_clean) < total_rows:
+        diff = total_rows - len(df_clean)
+        print(f"🧹 Detecting {diff} duplicate 'Skeleton' rows. Cleaning DB...")
+        # We wipe the DB and re-insert the clean list (Metadata only) 
+        # This is safer than trying to delete specific rows by ID which might be shared.
+        table.delete("true") # Delete All
+        table.add(df_clean.to_dict('records')) # Re-add clean rows
+        df = df_clean # Update memory reference
+        print("✅ DB Sanitized.")
 
-    # 2. Generate Vectors
-    print(f"⚡ Generating vectors for {len(chunked_records)} pages...")
-    if not chunked_records:
-        print("❌ No text content extracted from any file.")
+    print(f"📊 Analyzing {len(df)} files...")
+
+    # --- 2. CHANGE DETECTION ---
+    tasks = []
+    files_to_delete = []
+    
+    # Check if 'vector' column even exists (Fresh DB scenario)
+    has_vector_col = 'vector' in df.columns
+
+    for _, row in df.iterrows():
+        f_path = row['file_path']
+        f_name = row['filename']
+        
+        if not os.path.exists(f_path):
+            print(f"🗑️  File deleted: {f_name}")
+            files_to_delete.append(f_path)
+            continue
+            
+        # Logic: Update if (No Vector) OR (File Changed on Disk)
+        disk_mtime = os.path.getmtime(f_path)
+        db_mtime = row.get('last_modified', 0)
+        if pd.isna(db_mtime): db_mtime = 0
+        
+        # Is the vector missing/empty?
+        is_empty = False
+        if not has_vector_col:
+            is_empty = True
+        else:
+            # Check if value is None or NaN
+            val = row.get('vector')
+            if val is None: is_empty = True
+            elif isinstance(val, float) and pd.isna(val): is_empty = True # Handle NaN
+        
+        # If file is newer (>1s diff) OR it has no brains yet
+        if is_empty or (disk_mtime - db_mtime > 1.0):
+            reason = "New/Empty" if is_empty else "Modified"
+            # print(f"🔄 Refreshing ({reason}): {f_name}")
+            files_to_delete.append(f_path) 
+            tasks.append(row.to_dict())
+
+    # --- 3. CLEANUP & EXECUTION ---
+    if files_to_delete:
+        print(f"🧹 Clearing old data for {len(files_to_delete)} files...")
+        for f_path in files_to_delete:
+            safe_path = f_path.replace("'", "''")
+            table.delete(f"file_path = '{safe_path}'")
+
+    if not tasks:
+        print("✅ No changes detected. Database is up to date.")
         return
 
-    embeddings = model.encode(texts_to_embed, batch_size=BATCH_SIZE, show_progress_bar=True)
+    print(f"🚀 Processing {len(tasks)} files with {SETTINGS['system']['max_workers']} workers...")
     
-    end_time = time.time()
-    print(f"✅ Embedded {len(chunked_records)} pages in {end_time - start_time:.2f} seconds.")
+    all_chunks = []
+    start_read = time.time()
+    
+    with ProcessPoolExecutor(max_workers=SETTINGS['system']['max_workers']) as executor:
+        results = executor.map(process_file_wrapper, tasks)
+        for res in results:
+            all_chunks.extend(res)
+            
+    print(f"✅ Generated {len(all_chunks)} chunks in {time.time() - start_read:.2f}s")
 
-    # 3. Merge and Save
-    final_payload = []
-    for i, record in enumerate(chunked_records):
-        record['vector'] = embeddings[i].tolist()
-        final_payload.append(record)
+    if not all_chunks:
+        print("⚠️ No content extracted from files.")
+        return
 
-    print("💾 Saving Page-Level Index to database...")
-    table.add(final_payload, mode="overwrite")
-    print("✅ Database successfully updated.")
+    print(f"🧠 Embedding {len(all_chunks)} chunks...")
+    model = SentenceTransformer(MODEL_NAME)
+    
+    inputs = [c.pop('_embedding_input') for c in all_chunks]
+    vectors = model.encode(inputs, batch_size=64, show_progress_bar=True)
+    
+    current_time = time.time()
+    for i, rec in enumerate(all_chunks):
+        rec['vector'] = vectors[i].tolist()
+        rec['last_modified'] = current_time
+        
+    print("💾 Saving to LanceDB...")
+    table.add(all_chunks, mode="append")
+    print("✅ Sync Complete.")
 
 if __name__ == "__main__":
     embed_documents()

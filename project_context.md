@@ -1,29 +1,51 @@
-### PROJECT STATE: Local-First AI Document Manager (v3)
-**Date:** Dec 27, 2025
-**Roles:** * **AI Solutions Architect:** Strategy, System Design, Constraints.
-* **Lead Developer:** Implementation, Code Standards (Verbose Comments), Error Handling.
+# 📂 Personal Document Intelligence Agent
 
-**1. Core Philosophy**
-* **Local-First:** No user data (embeddings/docs) leaves the machine.
-* **Privacy:** Zero-server dependency for the core loop.
-* **Agentic:** Architecture designed for autonomous agents (LangGraph).
-* **Code Quality:** Self-documenting code with comprehensive comments for maintainability.
+**Current Status:** Phase 6 (The "Cockpit" - Streamlit UI & Self-Healing Database)  
+**Last Updated:** December 2025  
+**Description:** A local, privacy-first AI search engine for personal files. It indexes Documents, Images, Emails, and Slides using vector embeddings and OCR, enabling semantic search via a web dashboard.
 
-**2. Hardware Profile**
-* **Primary Workstation:** Mac Studio (M2 Ultra, 60-Core GPU, 192GB Unified Memory).
-* **Optimization Target:** Metal Performance Shaders (MPS) for AI workloads.
+---
 
-**3. Architecture: The "Sidecar" Pattern**
-* **Frontend:** Electron/Tauri (Desktop Wrapper).
-* **Backend:** Python + FastAPI (Bundled Executable).
-* **Database:** LanceDB (Embedded, Serverless Vector DB).
-* **Storage Strategy:** Monorepo with single `.venv` root.
+## 🏗 System Architecture
 
-**4. Implementation details**
-* **Database Schema:** Pydantic models with explicit types.
-* **Scanning Logic:** `pathlib` for traversal, `xxhash` for collision-free IDs, `python-magic` for robust type detection.
-* **Idempotency:** All database operations must handle "Re-runs" gracefully (Upsert logic).
+### **Core Design Patterns**
+* **Factory Pattern:** Dynamically loads file handlers (`PDFExtractor`, `ImageExtractor`) based on `settings.yaml`.
+* **Parallel Incremental Engine:**
+    * **Delta Loading:** Only processes new or modified files (checks timestamps + vectors).
+    * **Self-Healing:** Automatically detects and removes duplicate "Skeleton" records.
+    * **Concurrency:** Uses `ProcessPoolExecutor` (10 workers) for high-speed indexing on Apple Silicon.
+* **Vector Search:** Uses `LanceDB` for serverless storage and `all-MiniLM-L6-v2` for semantic retrieval.
+* **User Interface:** A Streamlit web dashboard for visual search and preview.
 
-**5. Roadmap**
-* **Phase 1 (Complete):** Foundation (Scanner + Idempotent DB).
-* **Phase 2 (Next):** Intelligence (Local Embeddings with SBERT).
+### **Tech Stack**
+* **Language:** Python 3.12+
+* **Frontend:** Streamlit
+* **Database:** LanceDB
+* **AI Model:** `sentence-transformers/all-MiniLM-L6-v2`
+* **OCR/Vision:** `EasyOCR` + `OpenCV`
+* **File Parsing:** `PyMuPDF`, `python-docx`, `python-pptx`, `extract-msg`, `pandas`
+
+---
+
+## 📂 Directory Structure
+
+```text
+src/
+├── agents/
+│   ├── embedding_agent/      # The "Brain" (Parallel Incremental Engine)
+│   │   └── embedder.py       # Handles Delta Loading & Deduplication
+│   └── search_agent/         # The Retrieval Logic
+│       └── search.py         # Returns structured results (List of Dicts)
+├── common/
+│   ├── db.py                 # LanceDB Schema & Connection
+│   ├── interfaces.py         # BaseExtractor (Abstract Base Class)
+│   ├── factory.py            # ExtractorFactory (Plugin Manager)
+│   ├── extractors.py         # Concrete Classes (PDF, Doc, OCR, etc.)
+│   └── image_classifier.py   # Vision Heuristic (Doc vs Photo)
+├── config/
+│   ├── loader.py             # YAML Loader Singleton
+│   └── settings.yaml         # Central Control (Extensions, Workers)
+├── utils/
+│   └── clean_db.py           # Aggressive Deduplication Tool
+├── app.py                    # Streamlit Web Dashboard (The Cockpit)
+└── main.py                   # Backend Pipeline Entry Point
