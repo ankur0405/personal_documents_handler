@@ -1,51 +1,56 @@
-# 📂 Personal Document Intelligence Agent
+# 📂 Personal Documents Handler (Local RAG)
 
-**Current Status:** Phase 6 (The "Cockpit" - Streamlit UI & Self-Healing Database)  
-**Last Updated:** December 2025  
-**Description:** A local, privacy-first AI search engine for personal files. It indexes Documents, Images, Emails, and Slides using vector embeddings and OCR, enabling semantic search via a web dashboard.
+## 🎯 Project Vision
+A privacy-first, offline AI system that indexes, reads, and searches personal documents (Passports, Tax Forms, Contracts). It runs entirely on local hardware (Apple Silicon optimized) without sending a single byte to the cloud.
 
 ---
 
 ## 🏗 System Architecture
 
-### **Core Design Patterns**
-* **Factory Pattern:** Dynamically loads file handlers (`PDFExtractor`, `ImageExtractor`) based on `settings.yaml`.
-* **Parallel Incremental Engine:**
-    * **Delta Loading:** Only processes new or modified files (checks timestamps + vectors).
-    * **Self-Healing:** Automatically detects and removes duplicate "Skeleton" records.
-    * **Concurrency:** Uses `ProcessPoolExecutor` (10 workers) for high-speed indexing on Apple Silicon.
-* **Vector Search:** Uses `LanceDB` for serverless storage and `all-MiniLM-L6-v2` for semantic retrieval.
-* **User Interface:** A Streamlit web dashboard for visual search and preview.
+### **The "Brain" (AI Models)**
+| Component | Implementation | Specs | Role |
+| :--- | :--- | :--- | :--- |
+| **OCR Engine** | **PaddleOCR** (v2.7+) | `en_PP-OCRv5` | The "Eyes." Reads text from images, scans, and messy PDFs. Configured with angle classification (`cls=True`) for rotated docs. |
+| **Embeddings** | **BAAI/bge-large-en-v1.5** | 1024 Dim | The "Brain." Converts text into high-dimensional vector meaning. SOTA performance (Better than OpenAI Ada-002). |
+| **Vector DB** | **LanceDB** | Local Filesystem | The "Memory." Serverless, lightning-fast vector store saved to `data/lancedb_store`. |
 
-### **Tech Stack**
-* **Language:** Python 3.12+
-* **Frontend:** Streamlit
-* **Database:** LanceDB
-* **AI Model:** `sentence-transformers/all-MiniLM-L6-v2`
-* **OCR/Vision:** `EasyOCR` + `OpenCV`
-* **File Parsing:** `PyMuPDF`, `python-docx`, `python-pptx`, `extract-msg`, `pandas`
+### **The "Body" (Hardware Optimization)**
+* **Target Hardware:** Apple Silicon (M2 Ultra).
+* **Parallelism:** Multi-process architecture (`ProcessPoolExecutor`) with "Lane Control" to manage RAM.
+* **Memory Safety:**
+    * **Batching:** Strictly processes small batches (e.g., 4 files) at a time.
+    * **Flushing:** Workers are recycled and `gc.collect()` is forced after every batch to create a "Sawtooth" memory usage pattern (prevents leaks).
+    * **Safety Valves:** Images >2500px are auto-downscaled before OCR to prevent OOM (Out of Memory) crashes.
 
 ---
 
 ## 📂 Directory Structure
 
 ```text
-src/
-├── agents/
-│   ├── embedding_agent/      # The "Brain" (Parallel Incremental Engine)
-│   │   └── embedder.py       # Handles Delta Loading & Deduplication
-│   └── search_agent/         # The Retrieval Logic
-│       └── search.py         # Returns structured results (List of Dicts)
-├── common/
-│   ├── db.py                 # LanceDB Schema & Connection
-│   ├── interfaces.py         # BaseExtractor (Abstract Base Class)
-│   ├── factory.py            # ExtractorFactory (Plugin Manager)
-│   ├── extractors.py         # Concrete Classes (PDF, Doc, OCR, etc.)
-│   └── image_classifier.py   # Vision Heuristic (Doc vs Photo)
-├── config/
-│   ├── loader.py             # YAML Loader Singleton
-│   └── settings.yaml         # Central Control (Extensions, Workers)
-├── utils/
-│   └── clean_db.py           # Aggressive Deduplication Tool
-├── app.py                    # Streamlit Web Dashboard (The Cockpit)
-└── main.py                   # Backend Pipeline Entry Point
+personnal_documents_handler/
+├── data/                       # Database storage
+│   └── lancedb_store/          # LanceDB files (Vectors + Metadata)
+├── src/
+│   ├── agents/
+│   │   ├── embedding_agent/    # The Indexing Pipeline
+│   │   │   └── embedder.py     # Main logic: Extract -> Batch -> Embed -> Save
+│   │   └── search_agent/       # The Retrieval Engine
+│   │   │   └── search.py       # Semantic search logic
+│   ├── common/
+│   │   ├── db.py               # Singleton DB connection
+│   │   └── factory.py          # Extractor Factory (Router)
+│   ├── config/
+│   │   ├── autotune.py         # Hardware detection (Eco vs God Mode)
+│   │   ├── loader.py           # Config loader
+│   │   └── settings.yaml       # User settings
+│   ├── extractors/             # Modular File Handlers
+│   │   ├── __init__.py         # Exports classes
+│   │   ├── base.py             # Abstract Base Class
+│   │   ├── image.py            # Computer Vision (PaddleOCR + Pre-processing)
+│   │   ├── pdf.py              # Intelligent PDF (Text -> Gibberish Check -> OCR)
+│   │   ├── office.py           # Word, Excel, PowerPoint
+│   │   └── email.py            # Outlook .msg
+│   ├── app.py                  # Streamlit UI (The "Cockpit")
+│   └── main.py                 # CLI Entry Point
+├── project_context.md          # You are here
+└── requirements.txt            # Dependencies

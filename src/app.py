@@ -1,93 +1,82 @@
 import streamlit as st
-import os
-import sys
+import pandas as pd
+import time
+from sentence_transformers import SentenceTransformer
+from src.common.db import get_table
+from src.config.loader import SETTINGS
 
-# Ensure we can find 'src' modules
-sys.path.append(os.getcwd())
-
-from src.agents.search_agent.search import search_documents
-
-# --- PAGE CONFIG ---
+# 1. SETUP PAGE
 st.set_page_config(
-    page_title="My Doc Search", 
-    page_icon="🔍", 
+    page_title="Personal Doc Search",
+    page_icon="🔎",
     layout="wide"
 )
 
-# --- CUSTOM CSS (Optional Clean-up) ---
-st.markdown("""
-    <style>
-    .stApp { background-color: #0e1117; color: #FAFAFA; }
-    .stExpander { border: 1px solid #303030; border-radius: 5px; }
-    </style>
-""", unsafe_allow_html=True)
+# 2. LOAD BRAIN (Cached to prevent reloading on every click)
+@st.cache_resource
+def load_model():
+    model_name = SETTINGS['system']['model_name']
+    return SentenceTransformer(model_name), model_name
 
-# --- HEADER ---
-col1, col2 = st.columns([1, 5])
-with col1:
-    st.title("🧠") 
-with col2:
-    st.title("Personal Knowledge Base")
-    st.caption("Search across PDFs, Emails, Images, and Slides.")
+try:
+    model, active_model_name = load_model()
+except Exception as e:
+    st.error(f"❌ Failed to load AI Model: {e}")
+    st.stop()
 
-st.divider()
-
-# --- SIDEBAR CONTROLS ---
+# 3. SIDEBAR INFO
 with st.sidebar:
-    st.header("⚙️ Settings")
-    limit = st.slider("Max Results", min_value=1, max_value=20, value=5)
+    st.title("🧠 System Status")
+    st.info(f"**Active Brain:**\n{active_model_name}")
+    st.caption(f"Dimensions: {SETTINGS['system']['model_dimension']}")
     
-    st.markdown("---")
-    st.info("📂 **Connected Source:**\n`/Volumes/Extreme SSD/Documents`")
-    st.caption("Powered by LanceDB & MiniLM")
+    # Show DB Stats
+    try:
+        table = get_table()
+        row_count = len(table)
+        st.success(f"📚 Documents Indexed: {row_count}")
+    except:
+        st.warning("Database not found or empty.")
 
-# --- MAIN SEARCH BAR ---
-query = st.text_input("What are you looking for?", placeholder="e.g., Passport number, Tax deductions 2023, Project plan...")
+# 4. MAIN INTERFACE
+st.title("🔎 Personal Document Search")
+st.markdown("ask natural questions like *'What is my passport number?'* or *'Show me tax forms from 2022'*")
+
+query = st.text_input("Enter your query:", placeholder="Type here...")
 
 if query:
-    with st.spinner("Searching neural index..."):
-        results = search_documents(query, limit=limit)
-
-    if not results:
-        st.warning(f"No documents found matching '{query}'.")
-    else:
-        # st.success(f"Found {len(results)} matches.")
+    start_time = time.time()
+    
+    # A. Embed Query
+    query_vector = model.encode([query])[0].tolist()
+    
+    # B. Search Database
+    try:
+        table = get_table()
+        # Search and limit to top 5 results
+        results = table.search(query_vector).limit(5).to_list()
         
-        for i, hit in enumerate(results):
-            score = hit['score']
+        duration = time.time() - start_time
+        
+        if not results:
+            st.warning("No matching documents found.")
+        else:
+            st.subheader(f"Top Results ({duration:.2f}s)")
             
-            # Dynamic Icon based on file type
-            icon = "📄"
-            if hit['file_path'].endswith(('.jpg', '.png', '.jpeg')): icon = "🖼️"
-            elif hit['file_path'].endswith('.msg'): icon = "📧"
-            elif hit['file_path'].endswith('.pptx'): icon = "📊"
-            elif hit['file_path'].endswith(('.xlsx', '.csv')): icon = "📈"
-
-            # Expander Card
-            with st.expander(f"{icon} {hit['filename']} (Page {hit['page_number']})  —  Confidence: {score:.2%}", expanded=(i==0)):
+            for hit in results:
+                # Calculate Confidence Score (Inverse Distance)
+                distance = hit['_distance']
+                score = 1 - (distance / 2) # Approximation for Cosine Distance
                 
-                c1, c2 = st.columns([3, 2])
+                # Visual Confidence Bar
+                st.write(f"**📄 {hit['filename']}** (Page {hit['page_number']})")
+                st.progress(max(0.0, min(1.0, score)), text=f"Confidence: {score:.1%}")
                 
-                with c1:
-                    st.markdown("### 📝 Text Snippet")
-                    st.info(hit['content'])
-                    st.caption(f"📍 Path: `{hit['file_path']}`")
+                # Content Preview (Expandable)
+                with st.expander("View Content Snippet"):
+                    st.markdown(f"> {hit['content']}")
                 
-                with c2:
-                    # Image Preview Logic
-                    if hit['file_path'].lower().endswith(('.jpg', '.png', '.jpeg', '.heic')):
-                        if os.path.exists(hit['file_path']):
-                            st.image(hit['file_path'], caption="Live Preview", use_container_width=True)
-                        else:
-                            st.error("Image file missing from disk.")
-                    else:
-                        st.markdown(f"""
-                        <div style="
-                            border: 2px dashed #444; 
-                            border-radius: 10px; 
-                            padding: 40px; 
-                            text-align: center; 
-                            color: #666;">
-                            Preview not available for {icon}
-                        </div>
-                        """, unsafe_allow_html=True)
+                st.divider()
+                
+    except Exception as e:
+        st.error(f"Search Error: {e}")

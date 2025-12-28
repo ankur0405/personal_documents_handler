@@ -1,7 +1,10 @@
 system:
-  max_workers: 10              # Parallel threads/processes
-  chunk_size: 1000             # Characters per vector chunk (approx 200 words)
-  chunk_overlap: 100           # Overlap to preserve context between chunks
+  autotune: true                        # <--- SET TO TRUE TO ENABLE AI CONFIG
+  max_workers: 4                        # Parallel threads/processes
+  chunk_size: 1000                      # Characters per vector chunk (approx 200 words)
+  chunk_overlap: 100                    # Overlap to preserve context between chunks
+  model_name: "BAAI/bge-large-en-v1.5"  # The Brain
+  model_dimension: 1024                 # The Brain Size (MUST match the model!)
 
 paths:
   target_folder: "/Volumes/Extreme SSD/Documents"

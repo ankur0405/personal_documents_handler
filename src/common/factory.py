@@ -1,30 +1,24 @@
-import importlib
 from src.config.loader import SETTINGS
-from src.common import extractors
-from src.common.interfaces import BaseExtractor
+# Import everything from our new package
+from src.extractors import *
 
 class ExtractorFactory:
-    _registry = {}
-
-    @classmethod
-    def register_all(cls):
+    @staticmethod
+    def get_extractor(file_extension):
         """
-        Dynamically registers classes based on YAML config.
+        Returns an instance of the appropriate extractor class based on extension.
         """
-        # Map string names to actual classes in 'extractors.py'
-        # e.g. "PDFExtractor" -> extractors.PDFExtractor
-        mapping = SETTINGS['supported_extensions']
+        mapping = SETTINGS.get('supported_extensions', {})
+        extractor_class_name = mapping.get(file_extension)
         
-        for ext, class_name in mapping.items():
-            if hasattr(extractors, class_name):
-                cls._registry[ext] = getattr(extractors, class_name)
-
-    @classmethod
-    def get_extractor(cls, file_ext: str) -> BaseExtractor:
-        if not cls._registry:
-            cls.register_all()
-            
-        extractor_class = cls._registry.get(file_ext.lower())
+        if not extractor_class_name:
+            return None
+        
+        # Look up the class in the global namespace of this module
+        # (Since we imported * from src.extractors, they are available here)
+        extractor_class = globals().get(extractor_class_name)
+        
         if extractor_class:
-            return extractor_class() # Instantiate
+            return extractor_class()
+        
         return None

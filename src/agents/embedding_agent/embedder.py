@@ -1,23 +1,38 @@
 import time
+
 import os
+# SILENCE WARNINGS: Must be set before importing transformers
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
+import gc
 import pandas as pd
+import numpy as np
 from concurrent.futures import ProcessPoolExecutor
 from sentence_transformers import SentenceTransformer
 from src.common.db import get_table
-from src.common.factory import ExtractorFactory
 from src.config.loader import SETTINGS
 
-MODEL_NAME = 'all-MiniLM-L6-v2'
+# 1. LOAD CONFIG
+MODEL_NAME = SETTINGS['system']['model_name']
+EXPECTED_DIM = SETTINGS['system']['model_dimension']
+
+# MEMORY FIX:
+# We match Batch Size to Max Workers (4).
+# This ensures we process exactly one set of files, then STOP and FLUSH.
+BATCH_SIZE = SETTINGS['system']['max_workers'] 
 
 def process_file_wrapper(row_dict):
     """
     Worker Function: Extracts content from file.
     """
+    # Lazy Import inside the process to keep it isolated
+    from src.common.factory import ExtractorFactory
+    from src.config.loader import SETTINGS
+
     filename = row_dict['filename']
     doc_id = row_dict['id']
     file_path = row_dict['file_path']
     
-    # Normalize Extension
     raw_type = str(row_dict['file_type']).lower()
     file_type = raw_type if raw_type.startswith('.') else f".{raw_type}"
     
@@ -27,6 +42,7 @@ def process_file_wrapper(row_dict):
 
     chunks = []
     try:
+        # Extract content
         for page_num, content in extractor.extract(file_path):
             if not content: continue
 
@@ -57,6 +73,12 @@ def process_file_wrapper(row_dict):
     return chunks
 
 def embed_documents():
+    print(f"🧠 Active Brain: {MODEL_NAME} (Target: {EXPECTED_DIM} dim)")
+    
+    # Force settings refresh
+    num_workers = SETTINGS['system']['max_workers']
+    print(f"🚦 Parallel Mode: {num_workers} workers | Strict Batch Size: {BATCH_SIZE}")
+    
     table = get_table()
     df = table.to_pandas()
     
@@ -64,102 +86,125 @@ def embed_documents():
         print("⚠️ Database is empty. Waiting for Scanner...")
         return
 
-    # --- 1. DEDUPLICATION (Self-Healing) ---
-    # If the Scanner inserted the same file path multiple times, keep only one.
+    # --- 1. DEDUPLICATION ---
     total_rows = len(df)
     df_clean = df.drop_duplicates(subset=['file_path'], keep='first')
-    
     if len(df_clean) < total_rows:
-        diff = total_rows - len(df_clean)
-        print(f"🧹 Detecting {diff} duplicate 'Skeleton' rows. Cleaning DB...")
-        # We wipe the DB and re-insert the clean list (Metadata only) 
-        # This is safer than trying to delete specific rows by ID which might be shared.
-        table.delete("true") # Delete All
-        table.add(df_clean.to_dict('records')) # Re-add clean rows
-        df = df_clean # Update memory reference
-        print("✅ DB Sanitized.")
+        print(f"🧹 Removing {total_rows - len(df_clean)} duplicate rows...")
+        table.delete("true")
+        table.add(df_clean.to_dict('records'))
+        df = df_clean
 
-    print(f"📊 Analyzing {len(df)} files...")
-
-    # --- 2. CHANGE DETECTION ---
+    # --- 2. IDENTIFY TASKS ---
     tasks = []
     files_to_delete = []
-    
-    # Check if 'vector' column even exists (Fresh DB scenario)
     has_vector_col = 'vector' in df.columns
 
+    print(f"📊 Analyzing {len(df)} files for changes...")
+    
     for _, row in df.iterrows():
         f_path = row['file_path']
-        f_name = row['filename']
-        
         if not os.path.exists(f_path):
-            print(f"🗑️  File deleted: {f_name}")
             files_to_delete.append(f_path)
             continue
             
-        # Logic: Update if (No Vector) OR (File Changed on Disk)
         disk_mtime = os.path.getmtime(f_path)
         db_mtime = row.get('last_modified', 0)
         if pd.isna(db_mtime): db_mtime = 0
         
-        # Is the vector missing/empty?
-        is_empty = False
-        if not has_vector_col:
-            is_empty = True
-        else:
-            # Check if value is None or NaN
-            val = row.get('vector')
-            if val is None: is_empty = True
-            elif isinstance(val, float) and pd.isna(val): is_empty = True # Handle NaN
+        val = row.get('vector')
+        should_reindex = False
         
-        # If file is newer (>1s diff) OR it has no brains yet
-        if is_empty or (disk_mtime - db_mtime > 1.0):
-            reason = "New/Empty" if is_empty else "Modified"
-            # print(f"🔄 Refreshing ({reason}): {f_name}")
+        if not has_vector_col: should_reindex = True
+        elif val is None: should_reindex = True
+        elif isinstance(val, float) and pd.isna(val): should_reindex = True
+        elif hasattr(val, '__len__'):
+            if len(val) != EXPECTED_DIM: should_reindex = True
+            elif all(v == 0.0 for v in val): should_reindex = True
+        
+        if (disk_mtime - db_mtime > 1.0): should_reindex = True
+
+        if should_reindex:
             files_to_delete.append(f_path) 
             tasks.append(row.to_dict())
 
-    # --- 3. CLEANUP & EXECUTION ---
+    # --- 3. CLEANUP OLD DATA ---
     if files_to_delete:
-        print(f"🧹 Clearing old data for {len(files_to_delete)} files...")
-        for f_path in files_to_delete:
-            safe_path = f_path.replace("'", "''")
-            table.delete(f"file_path = '{safe_path}'")
+        if len(files_to_delete) >= len(df):
+             print("🧹 Full Re-Index detected. Wiping table...")
+             table.delete("true")
+        else:
+            print(f"🧹 Cleaning {len(files_to_delete)} old entries...")
+            batch_size = 50
+            for i in range(0, len(files_to_delete), batch_size):
+                batch = files_to_delete[i:i+batch_size]
+                safe_names = [n.replace("'", "''") for n in batch]
+                where_clause = f"file_path IN ({', '.join([repr(n) for n in safe_names])})"
+                try: table.delete(where_clause)
+                except: pass
 
     if not tasks:
-        print("✅ No changes detected. Database is up to date.")
+        print("✅ Database is up to date.")
         return
 
-    print(f"🚀 Processing {len(tasks)} files with {SETTINGS['system']['max_workers']} workers...")
+    # --- 4. EXECUTION ---
+    print(f"🚀 Processing {len(tasks)} files...")
     
-    all_chunks = []
-    start_read = time.time()
-    
-    with ProcessPoolExecutor(max_workers=SETTINGS['system']['max_workers']) as executor:
-        results = executor.map(process_file_wrapper, tasks)
-        for res in results:
-            all_chunks.extend(res)
-            
-    print(f"✅ Generated {len(all_chunks)} chunks in {time.time() - start_read:.2f}s")
+    try:
+        model = SentenceTransformer(MODEL_NAME, device='mps')
+        print("   ✅ Neural Engine (MPS) Enabled for Embeddings")
+    except:
+        model = SentenceTransformer(MODEL_NAME)
+        print("   ⚠️ Running on CPU")
 
-    if not all_chunks:
-        print("⚠️ No content extracted from files.")
-        return
+    total_chunks_processed = 0
+    start_time = time.time()
 
-    print(f"🧠 Embedding {len(all_chunks)} chunks...")
-    model = SentenceTransformer(MODEL_NAME)
-    
-    inputs = [c.pop('_embedding_input') for c in all_chunks]
-    vectors = model.encode(inputs, batch_size=64, show_progress_bar=True)
-    
-    current_time = time.time()
-    for i, rec in enumerate(all_chunks):
-        rec['vector'] = vectors[i].tolist()
-        rec['last_modified'] = current_time
+    # Iterate through tasks in chunks
+    for i in range(0, len(tasks), BATCH_SIZE):
+        batch_tasks = tasks[i : i + BATCH_SIZE]
+        current_batch_num = (i // BATCH_SIZE) + 1
+        total_batches = (len(tasks) // BATCH_SIZE) + 1
         
-    print("💾 Saving to LanceDB...")
-    table.add(all_chunks, mode="append")
-    print("✅ Sync Complete.")
+        print(f"   [Batch {current_batch_num}/{total_batches}] Processing {len(batch_tasks)} files...")
+        
+        batch_chunks = []
+        
+        # A. EXTRACT (CPU Parallel)
+        # We RECREATE the executor for every batch or group of batches.
+        # This is slightly slower but guarantees memory is freed.
+        with ProcessPoolExecutor(max_workers=num_workers) as executor:
+            results = executor.map(process_file_wrapper, batch_tasks)
+            for res in results:
+                batch_chunks.extend(res)
+        
+        if not batch_chunks:
+            continue
+
+        # B. EMBED & SAVE
+        try:
+            inputs = [c.pop('_embedding_input') for c in batch_chunks]
+            
+            # Embed
+            vectors = model.encode(inputs, batch_size=32, show_progress_bar=False)
+            
+            current_time_val = time.time()
+            for idx, rec in enumerate(batch_chunks):
+                rec['vector'] = vectors[idx].tolist()
+                rec['last_modified'] = current_time_val
+            
+            table.add(batch_chunks, mode="append")
+            
+            total_chunks_processed += len(batch_chunks)
+            
+        except Exception as e:
+            print(f"     ❌ Batch Error: {e}")
+
+        # C. FLUSH MEMORY
+        del batch_chunks, inputs, vectors
+        gc.collect()
+
+    print(f"✅ Pipeline Complete. Processed {total_chunks_processed} chunks in {time.time() - start_time:.2f}s")
 
 if __name__ == "__main__":
     embed_documents()
