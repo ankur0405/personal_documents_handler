@@ -1,56 +1,32 @@
-# 📂 Personal Documents Handler (Local RAG)
+# Project Context: Intelligent Document Chatbot
 
-## 🎯 Project Vision
-A privacy-first, offline AI system that indexes, reads, and searches personal documents (Passports, Tax Forms, Contracts). It runs entirely on local hardware (Apple Silicon optimized) without sending a single byte to the cloud.
+## Project Vision
+To create a conversational agent ("Chatbox") that allows users to interact with their personal document repository (Visas, Tax Docs, Legal). Unlike simple search, this system maintains chat context, understands document categories, and performs intelligent reasoning (e.g., "latest" vs. "oldest", identifying missing documents).
 
----
+## Architecture Overview
 
-## 🏗 System Architecture
+### 1. The "Smart" Ingestion Pipeline
+We are moving away from simple chunking to a three-step parallel process:
+* **Categorization:** Classify documents (e.g., "Visa", "Tax Return", "Insurance") before embedding.
+* **Metadata Extraction:** Extract structured fields (Dates, Country, Page Numbers) to enable filtering and sorting.
+* **Summarization:** Generate document-level summaries for high-level Q&A.
 
-### **The "Brain" (AI Models)**
-| Component | Implementation | Specs | Role |
-| :--- | :--- | :--- | :--- |
-| **OCR Engine** | **PaddleOCR** (v2.7+) | `en_PP-OCRv5` | The "Eyes." Reads text from images, scans, and messy PDFs. Configured with angle classification (`cls=True`) for rotated docs. |
-| **Embeddings** | **BAAI/bge-large-en-v1.5** | 1024 Dim | The "Brain." Converts text into high-dimensional vector meaning. SOTA performance (Better than OpenAI Ada-002). |
-| **Vector DB** | **LanceDB** | Local Filesystem | The "Memory." Serverless, lightning-fast vector store saved to `data/lancedb_store`. |
+### 2. Storage Strategy
+* **Vector Store:** Stores text embeddings.
+* **Metadata Store:** Stores rich JSON payloads alongside vectors (e.g., `{ "date": "2025-12-12", "category": "Visa" }`) to enable "Self-Querying" (filtering by date/type).
 
-### **The "Body" (Hardware Optimization)**
-* **Target Hardware:** Apple Silicon (M2 Ultra).
-* **Parallelism:** Multi-process architecture (`ProcessPoolExecutor`) with "Lane Control" to manage RAM.
-* **Memory Safety:**
-    * **Batching:** Strictly processes small batches (e.g., 4 files) at a time.
-    * **Flushing:** Workers are recycled and `gc.collect()` is forced after every batch to create a "Sawtooth" memory usage pattern (prevents leaks).
-    * **Safety Valves:** Images >2500px are auto-downscaled before OCR to prevent OOM (Out of Memory) crashes.
+### 3. Retrieval & Interaction
+* **Hybrid Search:** Combines semantic similarity (text match) with metadata filtering (e.g., `WHERE category = 'Visa' ORDER BY date DESC`).
+* **Conversational Memory:** The system retains session context. If the user asks "When does it expire?" after viewing a document, the system resolves "it" to the previously retrieved document.
+* **Gap Analysis (Future):** Ability to check for missing documents based on category counts (e.g., "Missing Flight Ticket").
 
----
+## Current Implementation Roadmap
+1.  **Refine Ingestion (Active):** Implement Metadata Extraction and Categorization logic.
+2.  **Re-Embed:** Re-process documents with the new metadata schema.
+3.  **Self-Querying Retriever:** Implement the logic to translate natural language ("latest visa") into structured DB queries.
+4.  **Chat Interface:** Build the session loop with history retention.
 
-## 📂 Directory Structure
-
-```text
-personnal_documents_handler/
-├── data/                       # Database storage
-│   └── lancedb_store/          # LanceDB files (Vectors + Metadata)
-├── src/
-│   ├── agents/
-│   │   ├── embedding_agent/    # The Indexing Pipeline
-│   │   │   └── embedder.py     # Main logic: Extract -> Batch -> Embed -> Save
-│   │   └── search_agent/       # The Retrieval Engine
-│   │   │   └── search.py       # Semantic search logic
-│   ├── common/
-│   │   ├── db.py               # Singleton DB connection
-│   │   └── factory.py          # Extractor Factory (Router)
-│   ├── config/
-│   │   ├── autotune.py         # Hardware detection (Eco vs God Mode)
-│   │   ├── loader.py           # Config loader
-│   │   └── settings.yaml       # User settings
-│   ├── extractors/             # Modular File Handlers
-│   │   ├── __init__.py         # Exports classes
-│   │   ├── base.py             # Abstract Base Class
-│   │   ├── image.py            # Computer Vision (PaddleOCR + Pre-processing)
-│   │   ├── pdf.py              # Intelligent PDF (Text -> Gibberish Check -> OCR)
-│   │   ├── office.py           # Word, Excel, PowerPoint
-│   │   └── email.py            # Outlook .msg
-│   ├── app.py                  # Streamlit UI (The "Cockpit")
-│   └── main.py                 # CLI Entry Point
-├── project_context.md          # You are here
-└── requirements.txt            # Dependencies
+## Key Technical Decisions
+* **Embeddings:** Re-initiating to include metadata.
+* **Search Type:** Self-Querying / Hybrid Search.
+* **Context:** Session-based (Conversational History).

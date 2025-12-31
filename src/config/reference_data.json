@@ -1,0 +1,64 @@
+{
+  "document_categories": [
+    {
+      "id": "identity_national",
+      "display_name": "National Identity Card",
+      "description": "Government issued ID like SSN card, Aadhaar, PAN Card, or Green Card."
+    },
+    {
+      "id": "passport",
+      "display_name": "Passport",
+      "description": "Official passport bio-pages or renewal pages."
+    },
+    {
+      "id": "visa_document",
+      "display_name": "Visa / Entry Permit",
+      "description": "Visa stamps, E-Visa PDFs, or I-797 Approval Notices."
+    },
+    {
+      "id": "driver_license",
+      "display_name": "Driver License",
+      "description": "State or country issued driving license."
+    },
+    {
+      "id": "financial_statement",
+      "display_name": "Bank/Financial Statement",
+      "description": "Monthly bank statements, credit card statements, or investment portfolio summaries."
+    },
+    {
+      "id": "tax_document",
+      "display_name": "Tax Document",
+      "description": "Tax returns (1040), W2 forms, 1099s, or tax payment receipts."
+    },
+    {
+      "id": "proof_of_address",
+      "display_name": "Proof of Address",
+      "description": "Utility bills (electricity, water, internet), lease agreements, or property deeds."
+    },
+    {
+      "id": "employment_record",
+      "display_name": "Employment Record",
+      "description": "Offer letters, pay stubs, employment verification letters, or relieving letters."
+    },
+    {
+      "id": "education_record",
+      "display_name": "Education / Transcript",
+      "description": "University degrees, marksheets, transcripts, or diplomas."
+    },
+    {
+      "id": "medical_record",
+      "display_name": "Medical / Immunization",
+      "description": "Vaccination records, insurance cards, or medical test reports."
+    },
+    {
+      "id": "travel_logistics",
+      "display_name": "Travel Logistics",
+      "description": "Flight tickets, hotel bookings, or travel insurance policies."
+    },
+    {
+      "id": "application_form",
+      "display_name": "Application Form",
+      "description": "Completed forms for visa (DS-160), passport, or other government applications."
+    }
+  ]
+}
