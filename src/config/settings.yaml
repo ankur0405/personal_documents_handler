@@ -1,79 +1,92 @@
 system:
-  autotune: true                        # <--- SET TO TRUE TO ENABLE AI CONFIG
-  max_workers: 4                        # Parallel threads/processes
-  chunk_size: 1000                      # Characters per vector chunk (approx 200 words)
-  chunk_overlap: 100                    # Overlap to preserve context between chunks
-  model_name: "BAAI/bge-small-en-v1.5" # The Brain
-  model_dimension: 384                  # The Brain Size (MUST match the model!)
+  autotune: true
+  # If autotune is True, this max_workers is a "soft limit" or fallback.
+  # Autotune will calculate the real number based on CPU cores.
+  max_workers: 4 
+  
+  chunk_size: 1000
+  chunk_overlap: 100
+  
+  # DATA CONSISTENCY (Must match your DB)
+  model_name: "BAAI/bge-small-en-v1.5"
+  model_dimension: 384
+
+# --- ENTERPRISE PERFORMANCE TUNING ---
+performance:
+  # 1. THE GATEKEEPER
+  # If RAM usage exceeds this %, new tasks are paused.
+  # Set to 75-80 for Laptops, 90-95 for Dedicated Servers.
+  ram_limit_percent: 80.0
+  
+  # 2. BATCHING
+  # How many text chunks to send to the Embedding Model at once.
+  # 32 is standard. 64/128 for powerful GPUs.
+  embedding_batch_size: 32
+  
+  # 3. TIMINGS (The "Heartbeat")
+  # How long to sleep (seconds) when the Worker Queue is full.
+  queue_full_wait: 0.1
+  
+  # How long to sleep (seconds) when RAM is too high (Cool down).
+  ram_high_wait: 2.0
+  
+  # How long to sleep (seconds) after a successful batch cleanup.
+  cleanup_wait: 0.1
 
 paths:
   target_folder: "/Volumes/Extreme SSD/Documents"
   db_path: "data/lancedb_store"
 
-# The Registry: Maps extensions to their handler class
-# This makes the system "discoverable" and decoupled.
 supported_extensions:
-  # Documents
   .pdf: "PDFExtractor"
   .docx: "DocxExtractor"
-  .doc: "DocxExtractor"      # Fallback for now
+  .doc: "DocxExtractor"
   .txt: "TextExtractor"
   .md: "TextExtractor"
-
-  # Data
   .xlsx: "SpreadsheetExtractor"
   .xls: "SpreadsheetExtractor"
   .csv: "SpreadsheetExtractor"
-
-  # Presentations
   .pptx: "SlideExtractor"
-
-  # Messages
   .msg: "EmailExtractor"
-
-  # Images (OCR)
   .png: "ImageExtractor"
   .jpg: "ImageExtractor"
   .jpeg: "ImageExtractor"
   .heic: "ImageExtractor"
 
 llm:
-  # Provider can be 'openai' or 'local_ollama'
   provider: "local_ollama"
-  
-  # Settings for Local Ollama
   local_ollama:
-    # 'host.docker.internal' allows Docker to talk to the Host machine (Mac/Windows)
-    #base_url: "http://host.docker.internal:11434/v1" #when using docker
     base_url: "http://localhost:11434/v1"
-    model: "llama3"  # or 'mistral', 'gemma'
-    api_key: "ollama" # generic key required by client libraries
-
-  # Settings for OpenAI (Future use)
-  openai:
-    model: "gpt-4-turbo"
-    api_key_env_var: "OPENAI_API_KEY"
+    model: "llama3"
+    api_key: "ollama"
 
 classifier:
-  # Settings specific to the classification agent
   max_input_tokens: 3000
   confidence_threshold: 0.7
 
-# --- HARDWARE OVERRIDES ---
-# These control SPEED (Batch Size), not DATA STRUCTURE (Model Name)
+# Hardware Profiles are now just overrides for the defaults above
 hardware_profiles:
   entry_level:
     mode_name: "Entry Level"
-    description: "Entry Level (Low RAM/CPU)"
-    batch_size: 16
-    max_workers: 2
+    description: "Low Resource Mode"
   
   balanced:
     mode_name: "Balanced Mode"
-    description: "Balanced (Standard Laptop)"
-    batch_size: 32
+    description: "Standard Laptop Mode"
   
   high_performance:
     mode_name: "High Performance"
-    description: "High Performance (Workstation/Server)"
-    batch_size: 64
+    description: "Server/Workstation Mode"
+
+performance:
+  # 1. ADMISSION CONTROL
+  # Stop accepting new files if global RAM usage is above this %
+  ram_limit_percent: 80.0
+  
+  # 2. THE KILL SWITCH (Supervisor Mode)
+  # If a single worker process exceeds this MB, it is killed and restarted.
+  # 2500MB (2.5GB) is a safe limit for OCR tasks.
+  worker_bloat_limit_mb: 2500
+  
+  # 3. BATCHING
+  embedding_batch_size: 32

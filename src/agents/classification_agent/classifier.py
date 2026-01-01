@@ -1,44 +1,68 @@
+import os
 import json
-import logging
 import datetime
-from typing import Optional, Dict, Any
-from pydantic import BaseModel, Field
-
-# Imports for modularity
-from src.utils.config_loader import load_category_config
-from src.common.llm_factory import LLMFactory
+import logging
+from typing import Dict, Any, List
+from openai import OpenAI
+from src.config.loader import SETTINGS
 
 logger = logging.getLogger(__name__)
 
-# --- 1. Output Schema ---
-class ExtractedMetadata(BaseModel):
-    category_id: str = Field(..., description="The ID of the matching category.")
-    confidence_score: float = Field(..., description="Confidence score between 0.0 and 1.0.")
-    issue_date: Optional[str] = Field(None, description="ISO 8601 format (YYYY-MM-DD).")
-    expiry_date: Optional[str] = Field(None, description="ISO 8601 format (YYYY-MM-DD).")
-    country: Optional[str] = Field(None, description="Country associated with the document.")
-    person_name: Optional[str] = Field(None, description="Primary person named.")
-    summary: str = Field(..., description="Brief 1-sentence summary.")
-
-# --- 2. The Classification Agent ---
 class DocumentClassifier:
     def __init__(self):
-        """
-        Initializes the agent using settings.yaml. No hardcoded models allowed.
-        """
-        # 1. Get Client and Model from Factory
-        self.client, self.model_name = LLMFactory.get_client()
+        self.config = SETTINGS.get('classifier', {})
+        self.llm_config = SETTINGS.get('llm', {})
+        self.max_tokens = self.config.get('max_input_tokens', 3000)
         
-        # 2. Get Agent-specific settings
-        self.settings = LLMFactory.get_classifier_settings()
-        self.max_tokens = self.settings.get("max_input_tokens", 3000)
+        # Load Category Definitions
+        self.categories = self._load_categories()
+        self.valid_ids = [c['id'] for c in self.categories]
+        self.category_prompt_str = json.dumps(self.categories, indent=2)
         
-        # 3. Load Categories
-        self.category_prompt_str, self.valid_ids = load_category_config()
+        # Initialize LLM Client
+        self._init_client()
 
-    def classify(self, text: str) -> Dict[str, Any]:
+    def _load_categories(self) -> List[Dict]:
+        """
+        Loads allowed categories. 
+        In a real app, these might come from a DB or YAML.
+        """
+        return [
+            {"id": "invoice", "description": "Bill for goods or services"},
+            {"id": "receipt", "description": "Proof of payment"},
+            {"id": "bank_statement", "description": "Periodic bank account summary"},
+            {"id": "tax_return", "description": "Government tax filing (1040, W2, etc.)"},
+            {"id": "contract", "description": "Legal agreement between parties"},
+            {"id": "id_card", "description": "Passport, Driver License, National ID"},
+            {"id": "medical_record", "description": "Doctor notes, prescriptions, lab results"},
+            {"id": "visa_document", "description": "Immigration documents, H1B, Visas"},
+            {"id": "resume", "description": "CV or Resume"},
+            {"id": "educational_certificate", "description": "Degree, Transcript, or Diploma"},
+            {"id": "utility_bill", "description": "Electricity, Water, Internet bill"},
+            {"id": "insurance_policy", "description": "Health, Car, or Home insurance policy"}
+        ]
+
+    def _init_client(self):
+        """Sets up the OpenAI-compatible client (Ollama/OpenAI)"""
+        provider = self.llm_config.get('provider', 'local_ollama')
         
-        # We explicitly give it an example JSON so it knows exactly what to do.
+        if provider == 'local_ollama':
+            conf = self.llm_config.get('local_ollama', {})
+            self.client = OpenAI(
+                base_url=conf.get('base_url', 'http://localhost:11434/v1'),
+                api_key=conf.get('api_key', 'ollama')
+            )
+            self.model_name = conf.get('model', 'llama3')
+        elif provider == 'openai':
+            conf = self.llm_config.get('openai', {})
+            self.client = OpenAI(api_key=os.getenv(conf.get('api_key_env_var')))
+            self.model_name = conf.get('model', 'gpt-4-turbo')
+
+    def classify(self, text: str, filename: str = "Unknown") -> Dict[str, Any]:
+        """
+        Classifies the document using the LLM.
+        Now accepts 'filename' for better logging traceability.
+        """
         system_prompt = f"""
         You are an intelligent document archivist.
         TODAY'S DATE: {datetime.date.today()} 
@@ -47,8 +71,8 @@ class DocumentClassifier:
         {self.category_prompt_str}
         
         --- INSTRUCTIONS ---
-        1. Analyze the document text provided by the user.
-        2. Select the BEST matching Category ID from the list above.
+        1. Analyze the document text provided.
+        2. Select the BEST matching Category ID.
         3. Extract dates strictly in YYYY-MM-DD format.
         4. Return ONLY the JSON object.
 
@@ -60,10 +84,11 @@ class DocumentClassifier:
             "expiry_date": "2033-01-12",
             "country": "USA",
             "person_name": "John Doe",
-            "summary": "A US B1/B2 Visa issued to John Doe valid until 2033."
+            "summary": "A US B1/B2 Visa issued to John Doe."
         }}
         """
 
+        # Truncate text to fit context window
         truncated_text = text[:self.max_tokens]
 
         try:
@@ -78,22 +103,18 @@ class DocumentClassifier:
             )
 
             result_json = response.choices[0].message.content
-            
-            # Debugging: Uncomment the line below if you want to see exactly what Llama returns
-            # print(f"DEBUG RAW RESPONSE: {result_json}")
-
             data = json.loads(result_json)
             
             # Validation Logic
             if data.get("category_id") not in self.valid_ids:
-                # Fallback: Try to "fuzzy match" or just warn
-                logger.warning(f"Invalid ID '{data.get('category_id')}'. Defaulting to uncategorized.")
+                logger.warning(f"⚠️  [{filename}] Invalid ID '{data.get('category_id')}'. Defaulting to 'uncategorized'.")
                 data["category_id"] = "uncategorized"
 
             return data
 
         except Exception as e:
-            logger.error(f"Classification failed: {e}")
+            # Only print/log real errors, not just confusion
+            logger.error(f"❌ [{filename}] Classification failed: {e}")
             return {
                 "category_id": "uncategorized",
                 "confidence_score": 0.0,

@@ -1,32 +1,63 @@
-# Project Context: Intelligent Document Chatbot
+# Project Context: Personal Documents Handler (Local RAG)
 
-## Project Vision
-To create a conversational agent ("Chatbox") that allows users to interact with their personal document repository (Visas, Tax Docs, Legal). Unlike simple search, this system maintains chat context, understands document categories, and performs intelligent reasoning (e.g., "latest" vs. "oldest", identifying missing documents).
+## 1. Project Overview
+A high-performance, local-first RAG (Retrieval Augmented Generation) pipeline designed to ingest, classify, and index personal documents (PDFs, Images) into a LanceDB vector database. The system is optimized for macOS (Apple Silicon) and prioritizes stability over raw speed, using a "Supervisor" architecture to manage memory leaks and system resource usage.
 
-## Architecture Overview
+## 2. Current Architecture: "The Decoupled Supervisor"
+We have implemented a **3-Tier Decoupled Architecture** to ensure the UI remains responsive while heavy AI tasks run in the background.
 
-### 1. The "Smart" Ingestion Pipeline
-We are moving away from simple chunking to a three-step parallel process:
-* **Categorization:** Classify documents (e.g., "Visa", "Tax Return", "Insurance") before embedding.
-* **Metadata Extraction:** Extract structured fields (Dates, Country, Page Numbers) to enable filtering and sorting.
-* **Summarization:** Generate document-level summaries for high-level Q&A.
+### **The Three Tiers**
+1.  **The Orchestrator (`embedder.py`):**
+    * **Role:** The "Boss" / Middleman.
+    * **Responsibilities:** Manages the process pool, polls the `ResultQueue`, updates the UI, and writes to LanceDB.
+    * **Logic:** Uses a "Sniper" to kill workers using >4GB RAM and an "Auto-Scaler" to spawn new workers if CPU < 50%.
+2.  **The Worker (`worker.py`):**
+    * **Role:** The "Labor."
+    * **Responsibilities:** Performs OCR, Classification, and Chunking in a separate memory space.
+    * **Communication:** Throttles UI updates (max 1 msg every 0.3s) to prevent queue flooding.
+3.  **The Dashboard (`dashboard.py`):**
+    * **Role:** The "Face."
+    * **Style:** Modern "Dark Mode" theme (`#2b2b2b` background) with card-based worker rows.
+    * **Function:** Pure visualization. It receives updates from the Orchestrator, never directly from workers.
 
-### 2. Storage Strategy
-* **Vector Store:** Stores text embeddings.
-* **Metadata Store:** Stores rich JSON payloads alongside vectors (e.g., `{ "date": "2025-12-12", "category": "Visa" }`) to enable "Self-Querying" (filtering by date/type).
+## 3. Key Technical Decisions
+* **Throttled IPC:** Workers buffer their progress and only ping the main process 3 times per second to prevent "event storms."
+* **Visual Feedback:**
+    * **Global Bar:** Shows overall files processed + ETA.
+    * **Worker Cards:** Show distinct status (Filename + Progress Bar) for each process.
+* **Documentation:**
+    * **Mermaid:** Text-based diagram in `docs/architecture/system_overview.md`.
+    * **Draw.io:** Visual diagram in `docs/architecture/system_overview.drawio`.
 
-### 3. Retrieval & Interaction
-* **Hybrid Search:** Combines semantic similarity (text match) with metadata filtering (e.g., `WHERE category = 'Visa' ORDER BY date DESC`).
-* **Conversational Memory:** The system retains session context. If the user asks "When does it expire?" after viewing a document, the system resolves "it" to the previously retrieved document.
-* **Gap Analysis (Future):** Ability to check for missing documents based on category counts (e.g., "Missing Flight Ticket").
+## 4. Current Folder Structure
 
-## Current Implementation Roadmap
-1.  **Refine Ingestion (Active):** Implement Metadata Extraction and Categorization logic.
-2.  **Re-Embed:** Re-process documents with the new metadata schema.
-3.  **Self-Querying Retriever:** Implement the logic to translate natural language ("latest visa") into structured DB queries.
-4.  **Chat Interface:** Build the session loop with history retention.
-
-## Key Technical Decisions
-* **Embeddings:** Re-initiating to include metadata.
-* **Search Type:** Self-Querying / Hybrid Search.
-* **Context:** Session-based (Conversational History).
+```text
+personnal_documents_handler/
+├── .venv/                      # Virtual Environment
+├── data/                       # Local Storage
+│   ├── raw/                    # Input documents
+│   └── lancedb/                # Vector Database
+├── docs/                       # Project Documentation
+│   └── architecture/
+│       ├── system_overview.md      # Mermaid Diagram
+│       └── system_overview.drawio  # Visual XML Diagram
+├── src/
+│   ├── main.py                 # Entry point
+│   ├── agents/
+│   │   ├── scanner_agent/      # File discovery
+│   │   ├── classification_agent/
+│   │   │   └── classifier.py   # Document classification logic
+│   │   └── embedding_agent/    # CORE ENGINE
+│   │       ├── embedder.py     # Orchestrator (Main Loop)
+│   │       ├── worker.py       # Worker Process Logic (OCR/Chunking)
+│   │       └── dashboard.py    # Tkinter UI Class (Dark Mode)
+│   ├── common/
+│   │   ├── db.py               # Database connection
+│   │   ├── factory.py          # Extractor Factory
+│   │   ├── storage.py          # File path utilities
+│   │   └── utils.py
+│   └── config/
+│       ├── settings.yaml       # Configuration (Models, Paths)
+│       └── loader.py
+├── requirements.txt
+└── project_context.md          # This file

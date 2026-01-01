@@ -1,68 +1,49 @@
 import lancedb
-import os
 from lancedb.pydantic import LanceModel, Vector
-from pydantic import Field
-from pathlib import Path
+from typing import Optional
+from pydantic import Field # Standard Pydantic Field
+
 from src.config.loader import SETTINGS
 
-# --- CONFIGURATION ---
-# Dynamically resolve the project root to ensure this works
-# regardless of where the script is called from.
-BASE_DIR = Path(__file__).resolve().parent.parent.parent
+# 1. Load Settings
+DB_PATH = SETTINGS['paths']['db_path']
+DIMENSION = SETTINGS['system']['model_dimension']
 
-# Construct the absolute path using the relative path from settings.yaml
-# Config says "data/lancedb_store", so we join it with the project root.
-DB_PATH = os.path.join(BASE_DIR, SETTINGS['paths']['db_path'])
-
-# Ensure the data directory exists before we try to connect
-os.makedirs(DB_PATH, exist_ok=True)
-
-# --- DYNAMIC SCHEMA CONFIG ---
-# This is the key fix. We read the dimension (768 or 384) from the config.
-VECTOR_DIM = SETTINGS['system']['model_dimension']
-print(f"🔌 Database Schema Configured for: {VECTOR_DIM} dimensions")
-
-# --- SCHEMA DEFINITION ---
+# 2. Define the Schema
 class Document(LanceModel):
-    """
-    The Master Schema for our Document Database.
-    Inherits from LanceModel to allow seamless integration with LanceDB.
-    """
-    # Primary Key: Unique ID (usually file_hash + page_num)
-    id: str = Field(pk=True)
-
-    # Metadata Fields
+    # IDs
+    id: str
+    
+    # THE FIX: We make vector required in the Schema, but provide a default 
+    # generator. If Scanner doesn't provide one, this fills it with 0.0s.
+    vector: Vector(DIMENSION) = Field(default_factory=lambda: [0.0] * DIMENSION)
+    
+    # Default content to empty string so Scanner doesn't fail
+    content: str = Field(default="")
+    page_number: int = Field(default=1)
+    
+    # Metadata (Required)
     filename: str
     file_path: str
-    file_type: str
-    file_size_bytes: int
-    creation_date: float = Field(default=0.0)
-    last_modified: float = Field(default=0.0)
+    last_modified: float
+    
+    # --- INTELLIGENT FIELDS (Optional) ---
+    category: Optional[str] = "uncategorized"
+    issue_date: Optional[str] = None
+    expiry_date: Optional[str] = None
+    country: Optional[str] = None
+    person: Optional[str] = None
+    summary: Optional[str] = None
 
-    # --- AI FIELDS ---
-    page_number: int = Field(default=1)
-    content: str = Field(default="")
+# 3. Singleton Database Connection
+_db_instance = None
 
-    # DYNAMIC VECTOR SIZE
-    # We use the variable from config instead of hardcoded 384.
-    # We also update the default zero-vector to match this size.
-    vector: Vector(VECTOR_DIM) = Field(default=[0.0] * VECTOR_DIM)
+def get_db():
+    global _db_instance
+    if _db_instance is None:
+        _db_instance = lancedb.connect(DB_PATH)
+    return _db_instance
 
-    # Future-proofing fields (Phase 2/3)
-    summary: str = Field(default="")
-    category: str = Field(default="Unsorted")
-
-
-# --- DATABASE CONNECTION ---
 def get_table(table_name="documents"):
-    """
-    Connects to the embedded LanceDB instance and retrieves the requested table.
-    Safely creates the table if it does not exist.
-    """
-    db = lancedb.connect(DB_PATH)
-
-    if table_name in db.table_names():
-        return db.open_table(table_name)
-    else:
-        # Create a new table using the Dynamic Schema defined above
-        return db.create_table(table_name, schema=Document)
+    db = get_db()
+    return db.create_table(table_name, schema=Document, exist_ok=True)
