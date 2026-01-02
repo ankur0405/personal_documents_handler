@@ -4,20 +4,28 @@ import time
 import gc
 import logging
 import queue
+import traceback
 from src.common.factory import ExtractorFactory
 from src.agents.classification_agent.classifier import DocumentClassifier
 from src.common.storage import StorageProvider
 from src.config.loader import SETTINGS
 
 def count_pages_fast(filepath):
+    """
+    Counts /Page entries in PDF binary for fast approximation.
+    Used by the Producer to decide on slicing.
+    """
     try:
         with open(filepath, "rb") as f:
-            # Counts /Page entries in PDF binary (fast approximation)
             return len(re.findall(br"/Type\s*/Page\b", f.read()))
     except:
         return 1
 
 def worker_entrypoint(task_queue, result_queue, worker_id):
+    """
+    Standard worker process that picks tasks, extracts text, 
+    and communicates progress to the Supervisor.
+    """
     logging.getLogger("ppocr").setLevel(logging.CRITICAL)
     logging.getLogger("paddlex").setLevel(logging.CRITICAL)
 
@@ -34,25 +42,23 @@ def worker_entrypoint(task_queue, result_queue, worker_id):
 
             filename = task['filename']
             local_path = StorageProvider.get_file_path(task['file_path'])
+            p_range = task.get('page_range') # Tuple e.g. (1, 5)
             
-            # Estimate pages
-            total_pages = 1
-            if filename.lower().endswith('.pdf'):
-                total_pages = count_pages_fast(local_path)
-                if total_pages == 0: total_pages = 1
-
             # 1. SIGNAL START
+            # Calculate total pages for this specific slice for the progress bar
+            total_in_slice = p_range[1] - p_range[0] + 1 if p_range else 1
+            
             result_queue.put({
                 "type": "START",
                 "worker_id": worker_id,
-                "pid": pid,
-                "filename": filename,
-                "total": total_pages
+                "filename": filename if not p_range else f"{filename}[p{p_range[0]}-{p_range[1]}]",
+                "total": total_in_slice,
+                "task": task
             })
             
             # 2. DO WORK
             start_t = time.time()
-            chunks = _process_logic_with_updates(task, result_queue, worker_id, pid, total_pages)
+            chunks = _process_logic_with_updates(task, result_queue, worker_id, p_range)
             duration = time.time() - start_t
             
             # 3. SIGNAL DONE
@@ -62,12 +68,16 @@ def worker_entrypoint(task_queue, result_queue, worker_id):
                 "pid": pid,
                 "success": True,
                 "data": chunks,
-                "duration": duration
+                "duration": duration,
+                "task": task
             })
             
+            # Aggressive cleanup to prevent RAM bloat
             del chunks
             gc.collect()
             
+        except queue.Empty: 
+            continue
         except Exception as e:
             result_queue.put({
                 "type": "DONE",
@@ -75,43 +85,48 @@ def worker_entrypoint(task_queue, result_queue, worker_id):
                 "pid": pid,
                 "success": False,
                 "error": str(e),
-                "task": task 
+                "traceback": traceback.format_exc(),
+                "task": task
             })
 
-def _process_logic_with_updates(task, result_queue, worker_id, pid, total_pages):
+def _process_logic_with_updates(task, result_queue, worker_id, p_range):
+    """Internal logic to extract text, classify document, and create chunks."""
     filename = task['filename']
     local_path = StorageProvider.get_file_path(task['file_path'])
     
-    if 'file_type' in task:
-            raw = str(task['file_type']).lower()
-            f_type = raw if raw.startswith('.') else f".{raw}"
-    else:
-            _, ext = os.path.splitext(filename)
-            f_type = ext.lower()
+    # Determine extension and get extractor
+    _, ext = os.path.splitext(filename)
+    f_type = task.get('file_type', ext.lower())
+    if not f_type.startswith('.'): 
+        f_type = f".{f_type}"
 
     extractor = ExtractorFactory.get_extractor(f_type)
-    if not extractor: return []
+    if not extractor: 
+        return []
     
+    # Slicing logic: We iterate through the generator and filter by range
     pages_generator = extractor.extract(local_path)
     page_buffer = []
     
-    last_update_time = time.time()
+    start_p, end_p = p_range if p_range else (1, 999999)
     
-    for i, (p_num, content) in enumerate(pages_generator):
+    for i, (p_num, content) in enumerate(pages_generator, 1):
+        # Skip pages outside the slice
+        if i < start_p: 
+            continue
+        if i > end_p: 
+            break
+        
         page_buffer.append((p_num, content))
         
-        # THROTTLE: Update UI max every 0.3s
-        if time.time() - last_update_time > 0.3:
-            result_queue.put({
-                "type": "PROGRESS",
-                "worker_id": worker_id,
-                "current": i + 1
-            })
-            last_update_time = time.time()
+        # UI UPDATE: Send progress for every page in the slice
+        result_queue.put({
+            "type": "PROGRESS",
+            "worker_id": worker_id,
+            "current": i - start_p + 1
+        })
 
-    # Final "100%" update
-    result_queue.put({"type": "PROGRESS", "worker_id": worker_id, "current": total_pages})
-
+    # Join the text for classification (limited to 3500 chars for speed)
     full_text = " ".join([p[1] for p in page_buffer])[:3500]
     try:
         meta = DocumentClassifier().classify(full_text, filename=filename)
@@ -123,29 +138,32 @@ def _process_logic_with_updates(task, result_queue, worker_id, pid, total_pages)
     chunks = []
 
     for p_num, content in page_buffer:
-        if not content: continue
+        if not content: 
+            continue
+            
         start = 0
         while start < len(content):
             end = start + c_size
             slice_text = content[start:end]
-            hint = str(meta.get('category_id', '')).replace('_', ' ')
-            emb_input = f"Type: {hint} | Filename: {filename} | Content: {slice_text}"
             
+            # Map extracted metadata to the schema-compliant record
             rec = task.copy()
             rec.update({
-                'id': f"{task['id']}_p{p_num}_{start}",
+                'id': f"{task['id']}_p{p_num}_{start}", # Unique ID for parallel slices
                 'page_number': p_num,
                 'content': slice_text,
-                '_embedding_input': emb_input,
+                '_embedding_input': f"Type: {meta.get('category_id')} | Content: {slice_text[:500]}",
                 'category': meta.get('category_id'),
                 'issue_date': meta.get('issue_date'),
-                'expiry_date': meta.get('expiry_date'),
-                'country': meta.get('country'),
-                'person': meta.get('person_name'),
-                'summary': meta.get('summary')
+                'expiry_date': meta.get('expiry_date', ''),
+                'country': meta.get('country', ''),
+                'person': meta.get('person_name', ''),
+                'summary': meta.get('summary', '')
             })
             chunks.append(rec)
+            
             start += (c_size - c_over)
-            if start >= len(content): break
+            if start >= len(content):
+                break
             
     return chunks

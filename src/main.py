@@ -1,37 +1,85 @@
-import sys
 import os
-import warnings # <--- Add this
+import glob
+import lancedb
+import shutil
+import pyarrow as pa
+import multiprocessing
+import gc
+import time
 
-# --- SILENCE MPS WARNINGS ---
-# Apple Silicon (MPS) doesn't support 'pin_memory' yet, but libraries request it anyway.
-# We filter this specific warning to keep the logs clean.
-warnings.filterwarnings("ignore", message=".*pin_memory.*")
-warnings.filterwarnings("ignore", category=UserWarning, module='torch.utils.data.dataloader')
-
-# --- PATH SETUP ---
-sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
-
-from src.agents.scanner_agent.scanner import scan_directory
+# Local Imports
+from src.config.loader import SETTINGS
 from src.agents.embedding_agent.embedder import embed_documents
+from src.utils.router import process_and_route
+from src.utils.schema_utils import get_arrow_schema
 
-# --- CONFIGURATION ---
-TARGET_FOLDER = "/volumes/Extreme SSD/Documents"
+def scan_and_ingest():
+    print("\n🔎 SCANNING: Using Centralized Schema & Router...")
+    
+    dimension = SETTINGS['system'].get('model_dimension', 384)
+    schema = get_arrow_schema(dimension)
+    
+    db = lancedb.connect(SETTINGS['paths']['lancedb'])
+    table_name = "documents"
+    
+    # Table initialization logic
+    if table_name not in db.table_names():
+        table = db.create_table(table_name, schema=schema)
+        files_in_db = set()
+    else:
+        table = db.open_table(table_name)
+        try:
+            df = table.to_pandas()
+            files_in_db = set(df['file_path'].tolist()) if not df.empty else set()
+        except:
+            files_in_db = set()
+
+    raw_path = SETTINGS['paths']['raw_data']
+    supported_ext_dict = SETTINGS.get('supported_extensions', {})
+    extensions = [f"*{ext}" for ext in supported_ext_dict.keys()] + ["*.zip"]
+    
+    files_on_disk = []
+    for ext in extensions:
+        files_on_disk.extend(glob.glob(os.path.join(raw_path, "**", ext), recursive=True))
+
+    new_records = []
+    for f_path in files_on_disk:
+        records = process_and_route(f_path, dimension, files_in_db)
+        new_records.extend(records)
+        
+        # Batch DB ingestion to save RAM
+        if len(new_records) >= 100:
+            table.add(new_records)
+            new_records = []
+            gc.collect()
+
+    if new_records:
+        table.add(new_records)
+    print("   ✅ Ingestion Sync Complete.")
+
+def main():
+    # macOS Start Method Fix
+    try:
+        multiprocessing.set_start_method('spawn', force=True)
+    except RuntimeError:
+        pass
+
+    os.environ["DISABLE_MODEL_SOURCE_CHECK"] = "True"
+    
+    scan_and_ingest()
+    
+    # Cooldown for RAM reclamation
+    gc.collect()
+    time.sleep(2)
+    
+    embed_documents()
+    
+    # Optional Global Cleanup
+    should_cleanup = SETTINGS.get('system', {}).get('cleanup_temp', True)
+    temp_path = os.path.join(os.getcwd(), "test_temp")
+    if should_cleanup and os.path.exists(temp_path):
+        print(f"\n🧹 CLEANUP: Removing {temp_path}")
+        shutil.rmtree(temp_path)
 
 if __name__ == "__main__":
-    try:
-        print("--- 🏁 STARTING PIPELINE ---")
-        
-        # Step 1: Scan for new/modified files
-        print("\n--- [STEP 1] SCANNING ---")
-        scan_directory(TARGET_FOLDER)
-        
-        # Step 2: Generate AI Embeddings
-        print("\n--- [STEP 2] EMBEDDING ---")
-        embed_documents()
-        
-        print("\n--- 🎉 PIPELINE FINISHED SUCCESSFULLY ---")
-        
-    except KeyboardInterrupt:
-        print("\n🛑 Pipeline stopped by user.")
-    except Exception as e:
-        print(f"\n❌ Critical Error: {e}")
+    main()

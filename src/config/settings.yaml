@@ -1,12 +1,15 @@
 system:
   autotune: true
   # If autotune is True, this max_workers is a "soft limit" or fallback.
+
+  cleanup_temp: true  # Set to false if you want to inspect unzipped files
+
   # Autotune will calculate the real number based on CPU cores.
-  max_workers: 4 
-  
+  max_workers: 4
+
   chunk_size: 1000
   chunk_overlap: 100
-  
+
   # DATA CONSISTENCY (Must match your DB)
   model_name: "BAAI/bge-small-en-v1.5"
   model_dimension: 384
@@ -17,41 +20,65 @@ performance:
   # If RAM usage exceeds this %, new tasks are paused.
   # Set to 75-80 for Laptops, 90-95 for Dedicated Servers.
   ram_limit_percent: 80.0
-  
+
   # 2. BATCHING
   # How many text chunks to send to the Embedding Model at once.
   # 32 is standard. 64/128 for powerful GPUs.
   embedding_batch_size: 32
-  
+
   # 3. TIMINGS (The "Heartbeat")
   # How long to sleep (seconds) when the Worker Queue is full.
   queue_full_wait: 0.1
-  
-  # How long to sleep (seconds) when RAM is too high (Cool down).
+
+  # 4. How long to sleep (seconds) when RAM is too high (Cool down).
   ram_high_wait: 2.0
-  
-  # How long to sleep (seconds) after a successful batch cleanup.
+
+  # 5. How long to sleep (seconds) after a successful batch cleanup.
   cleanup_wait: 0.1
 
-paths:
-  target_folder: "/Volumes/Extreme SSD/Documents"
-  db_path: "data/lancedb_store"
+  # 6. THE KILL SWITCH (Supervisor Mode)
+  # If a single worker process exceeds this MB, it is killed and restarted.
+  # 2500MB (2.5GB) is a safe limit for OCR tasks.
+  worker_bloat_limit_mb: 2500
 
 supported_extensions:
+  # Word Processing
   .pdf: "PDFExtractor"
   .docx: "DocxExtractor"
   .doc: "DocxExtractor"
+  .odt: "DocxExtractor"  # Added
+  .rtf: "TextExtractor"  # Added
+
+  # Text & Markdown
   .txt: "TextExtractor"
   .md: "TextExtractor"
+
+  # Spreadsheets
   .xlsx: "SpreadsheetExtractor"
   .xls: "SpreadsheetExtractor"
   .csv: "SpreadsheetExtractor"
+  .ods: "SpreadsheetExtractor" # Added
+
+  # Presentations
   .pptx: "SlideExtractor"
+  .ppt: "SlideExtractor"   # Added (legacy support)
+  .odp: "SlideExtractor"   # Added
+
+  # Emails
   .msg: "EmailExtractor"
+  .eml: "EmailExtractor"   # Added (Standard email format)
+
+  # Images
   .png: "ImageExtractor"
   .jpg: "ImageExtractor"
   .jpeg: "ImageExtractor"
   .heic: "ImageExtractor"
+  .webp: "ImageExtractor"  # Added
+  .tiff: "ImageExtractor"  # Added
+
+# --- Containers (New) ---
+  .zip: "ArchiveExtractor"
+  .7z:  "ArchiveExtractor"
 
 llm:
   provider: "local_ollama"
@@ -69,24 +96,30 @@ hardware_profiles:
   entry_level:
     mode_name: "Entry Level"
     description: "Low Resource Mode"
-  
+
   balanced:
     mode_name: "Balanced Mode"
     description: "Standard Laptop Mode"
-  
+
   high_performance:
     mode_name: "High Performance"
     description: "Server/Workstation Mode"
 
-performance:
-  # 1. ADMISSION CONTROL
-  # Stop accepting new files if global RAM usage is above this %
-  ram_limit_percent: 80.0
-  
-  # 2. THE KILL SWITCH (Supervisor Mode)
-  # If a single worker process exceeds this MB, it is killed and restarted.
-  # 2500MB (2.5GB) is a safe limit for OCR tasks.
+# --- PATHS ---
+paths:
+  # The code expects these specific keys
+  raw_data: "/Volumes/Extreme SSD/Documents"
+  lancedb: "data/lancedb_store"
+  # Retaining original keys just in case other modules use them
+  target_folder: "/Volumes/Extreme SSD/Documents"
+  db_path: "data/lancedb_store"
+
+# --- SUPERVISOR SETTINGS ---
+# New section to control the Timeout and Sniper logic
+supervisor:
+  # Kill worker if a single file takes longer than this (seconds)
+  time_limit_sec: 180
+  # Memory limit per worker before the 'Sniper' kills it (MB)
   worker_bloat_limit_mb: 2500
-  
-  # 3. BATCHING
-  embedding_batch_size: 32
+  # CPU threshold for the Auto-Scaler to spawn more workers
+  cpu_threshold_percent: 50.0
