@@ -1,3 +1,4 @@
+# deploy/Dockerfile.producer
 FROM python:3.12-slim
 
 # Prevent python from writing pyc files and enable unbuffered logging
@@ -6,21 +7,15 @@ ENV PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
-# Install modernized system dependencies for OpenCV and PaddleOCR
-# We swapped libgl1-mesa-glx for libgl1
+# Install libmagic for file type detection
 RUN apt-get update && apt-get install -y \
-    libgl1 \
-    libglib2.0-0 \
     libmagic1 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Pre-create model directory to avoid permission issues
-RUN mkdir -p /root/.paddlex
-
 COPY . .
 
-# Entry point: Runs the worker node as a module
-CMD ["python", "-m", "src.services.enricher_node"]
+# Entry point: Runs the main discovery producer
+CMD ["python", "-m", "src.main"]

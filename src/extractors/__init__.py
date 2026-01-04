@@ -1,17 +1,4 @@
-from .pdf import PDFExtractor
-from .image import ImageExtractor
-from .office import DocxExtractor, SlideExtractor, SpreadsheetExtractor, TextExtractor
-from .email import EmailExtractor
-from .archive import ArchiveExtractor
+# Minimal __init__.py to prevent eager loading of heavy dependencies
+from .base import BaseExtractor
 
-# Define what happens when someone does "from src.extractors import *"
-__all__ = [
-    "PDFExtractor",
-    "ImageExtractor",
-    "DocxExtractor",
-    "SlideExtractor",
-    "SpreadsheetExtractor",
-    "TextExtractor",
-    "EmailExtractor",
-    "ArchiveExtractor"
-]
+__all__ = ["BaseExtractor"]

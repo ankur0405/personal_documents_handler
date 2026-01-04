@@ -1,0 +1,15 @@
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: enricher-scaler
+spec:
+  scaleTargetRef:
+    name: enricher
+  minReplicaCount: 0  # Scale to zero when idle
+  maxReplicaCount: 10
+  triggers:
+  - type: kafka
+    metadata:
+      bootstrapServers: kafka:9092
+      topic: document_tasks
+      lagThreshold: "5" # Spawn new worker for every 5 pending documents

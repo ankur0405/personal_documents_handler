@@ -29,6 +29,7 @@ distro==1.9.0
 easygui==0.98.3
 easyocr==1.7.2
 ebcdic==1.1.1
+eml_parser==2.0.0
 en_core_web_sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl#sha256=1932429db727d4bff3deed6b34cfc05df17794f4a52eeb26cf8928f7c1a0fb85
 et_xmlfile==2.0.0
 extract-msg==0.55.0
@@ -86,6 +87,7 @@ preshed==3.0.12
 prettytable==3.17.0
 protobuf==6.33.2
 psutil==7.2.0
+publicsuffixlist==1.0.2.20251229
 py-cpuinfo==9.0.0
 pyarrow==22.0.0
 pyclipper==1.4.0

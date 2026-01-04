@@ -1,46 +1,41 @@
 import fitz  # PyMuPDF
-import cv2
 import numpy as np
-from .base import BaseExtractor
-from .image import run_ocr
+from pathlib import Path
+from src.common.utils import get_logger
 
-class PDFExtractor(BaseExtractor):
-    def extract(self, file_path, page_range=None):
+logger = get_logger(__name__)
+
+class PDFExtractor:
+    def __init__(self):
+        pass
+
+    def extract(self, file_path):
         """
-        Extracts text from a PDF, falling back to OCR if needed.
-        Supports specific page ranges for parallel processing.
+        Yields (page_num, text) for the digital layer of the PDF.
         """
         try:
             doc = fitz.open(file_path)
-            
-            # Determine which pages to process
-            if page_range:
-                start, end = page_range
-                pages_to_scan = range(start, min(end, len(doc)))
-            else:
-                pages_to_scan = range(len(doc))
-
-            for i in pages_to_scan:
-                page = doc[i]
-                text = page.get_text()
-                
-                # Gibberish Detection
-                is_gibberish = False
-                if len(text) > 50 and (text.count(' ') / len(text)) < 0.05:
-                    is_gibberish = True
-                
-                if is_gibberish or not text.strip():
-                    try:
-                        pix = page.get_pixmap(dpi=300)
-                        img_array = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.h, pix.w, pix.n)
-                        if pix.n == 4:
-                            img_array = cv2.cvtColor(img_array, cv2.COLOR_RGBA2RGB)
-                        text = run_ocr(img_array)
-                    except Exception as e:
-                        print(f"⚠️ OCR Failed for PDF page {i}: {e}")
-
-                if text.strip():
-                    yield i + 1, text
-                    
+            for page_num, page in enumerate(doc):
+                text = page.get_text("text")
+                yield page_num + 1, text
+            doc.close()
         except Exception as e:
-            print(f"⚠️ PDF Error {file_path}: {e}")
+            logger.error(f"❌ Digital PDF extraction failed for {file_path}: {e}")
+
+    def get_page_as_image(self, file_path, page_num=0, dpi=300):
+        """
+        Converts a specific PDF page to a high-res numpy array for OCR.
+        Required when the digital layer is garbled or missing.
+        """
+        doc = fitz.open(file_path)
+        page = doc.load_page(page_num)
+        
+        # Scaling matrix for 300 DPI (72 is default PDF resolution)
+        zoom = dpi / 72
+        mat = fitz.Matrix(zoom, zoom)
+        pix = page.get_pixmap(matrix=mat, colorspace=fitz.csRGB)
+        
+        # Convert pixmap to numpy array (H, W, C)
+        img = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.h, pix.w, 3)
+        doc.close()
+        return img

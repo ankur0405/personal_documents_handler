@@ -1,103 +1,105 @@
 import os
 import cv2
-import numpy as np
-import fitz  # PyMuPDF
+import importlib
 from datetime import datetime
-from src.common.db import DatabaseManager
-from src.agents.classification_agent.classifier import DiscoveryEngine
-from src.agents.classification_agent.ner_agent import EntityDiscovery
-from src.extractors.pdf import PDFExtractor
+from pathlib import Path
+from src.config.loader import config
+from src.agents.intelligence.embedding_engine import EmbeddingEngine
 from src.extractors.image import run_ocr
-from src.extractors.office import DocxExtractor, SpreadsheetExtractor
-from src.extractors.email import EmailExtractor
+from src.common.utils import get_logger
 
-
-def worker_entrypoint(task_queue, result_queue, worker_id):
-    """Entry point for the multiprocessing pool."""
-    worker = ProcessingWorker()
-    while True:
-        task = task_queue.get()
-        if task is None:
-            break
-
-        try:
-            processed_data = worker.process_message(task)
-            result_queue.put({
-                "type": "DONE",
-                "worker_id": worker_id,
-                "success": True,
-                "data": processed_data,
-                "task": task
-            })
-        except Exception as e:
-            result_queue.put({
-                "type": "DONE",
-                "worker_id": worker_id,
-                "success": False,
-                "error": str(e),
-                "task": task
-            })
-
+logger = get_logger(__name__)
 
 class ProcessingWorker:
-
     def __init__(self):
-        self.db_manager = DatabaseManager()
-        self.table = self.db_manager.initialize_table()
-        self.ner_agent = EntityDiscovery()
-        self.discovery_engine = DiscoveryEngine()
+        self.embedder = EmbeddingEngine()
+        # Uses the mapping we updated in settings.yaml
+        self.extension_map = config.supported_extensions
 
-    def _get_text_extractor(self, ext):
-        """Routes files to correct extractors."""
-        extractors = {
-            '.pdf': PDFExtractor(),
-            '.docx': DocxExtractor(),
-            '.xlsx': SpreadsheetExtractor(),
-            '.msg': EmailExtractor()
-        }
-        return extractors.get(ext)
+    def _get_extractor_instance(self, ext):
+        """Dynamically resolves extractor class from settings.yaml."""
+        class_path = self.extension_map.get(ext)
+        if not class_path:
+            return None
+        try:
+            module_path, class_name = class_path.rsplit(".", 1)
+            module = importlib.import_module(module_path)
+            return getattr(module, class_name)()
+        except Exception as e:
+            logger.error(f"❌ Failed to load extractor {class_path}: {e}")
+            return None
 
-    def process_message(self, task):
+    def _is_garbage(self, text):
+        """Detects if text is likely OCR noise (e.g., 'C32(.')."""
+        if not text or len(text.strip()) < 15:
+            return True
+        special_chars = sum(1 for c in text if not c.isalnum() and not c.isspace())
+        return (special_chars / len(text)) > 0.3
+
+    def process_message(self, task: dict):
         file_path = task.get("file_path")
-        ext = os.path.splitext(file_path)[1].lower()
+        ext = Path(file_path).suffix.lower()
         full_text = ""
+        metadata = {}
 
-        # 1. Extraction Logic
-        if ext in ['.jpg', '.jpeg', '.png']:
-            img = cv2.imread(file_path)
-            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-            full_text = run_ocr(img)
-        else:
-            extractor = self._get_text_extractor(ext)
+        try:
+            # 1. Dynamic Routing based on YAML
+            extractor = self._get_extractor_instance(ext)
+            
             if extractor:
-                # Convert generator to list to avoid 'object is not subscriptable'
-                content_items = list(extractor.extract(file_path))
-                full_text = "\n".join([str(item[1]) for item in content_items])
+                # FIX: Handle extractors that return (content, metadata) vs generators
+                result = extractor.extract(file_path)
+                
+                if isinstance(result, tuple) and len(result) == 2:
+                    full_text, metadata = result
+                else:
+                    # Fallback for list-based extractors (like Office/PDF)
+                    content_items = list(result)
+                    full_text = "\n".join([str(item[1]) for item in content_items if isinstance(item, (list, tuple))]).strip()
+                
+                # 2. High-Res Fallback for PDF/Images
+                if ext in ['.pdf', '.jpg', '.png', '.jpeg'] and self._is_garbage(full_text):
+                    logger.info(f"🔄 Low quality text for {ext}. Triggering high-res OCR...")
+                    if hasattr(extractor, 'get_page_as_image'):
+                        img = extractor.get_page_as_image(file_path)
+                    else:
+                        img = cv2.imread(file_path)
+                    
+                    if img is not None:
+                        if len(img.shape) == 3 and img.shape[2] == 3:
+                            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                        full_text = run_ocr(img)
+            
+            # 3. Vectorization (Ensure we don't send empty strings to embedder)
+            clean_text = full_text.strip() if full_text else f"File: {os.path.basename(file_path)}"
+            vector = self.embedder.get_embeddings(clean_text[:5000])
+            
+            now = datetime.now().isoformat()
+            
+            # 4. Strict Schema Alignment for LanceDB
+            return {
+                "id": task.get("id"),
+                "vector": vector,
+                "filename": os.path.basename(file_path),
+                "file_path": file_path,
+                "file_type": ext.strip('.'),
+                "content": clean_text,
+                "tags": [],
+                "source": "distributed_node",
+                "engine_version": "2.3",
+                "timestamp": now,
+                "created_at": now,
+                "category": metadata.get("category", "Unsorted"),
+                "processing_status": "completed",
+                "page_number": 1,
+                "last_modified": os.path.getmtime(file_path),
+                "issue_date": metadata.get("date", ""), 
+                "expiry_date": "", 
+                "primary_date": metadata.get("date", ""),
+                "country": "", 
+                "person": metadata.get("from", "")
+            }
 
-        # 2. Intelligence Layer
-        owner = self.ner_agent.get_owner(full_text)
-        # Bypassing vector requirement for classification in smoke test
-        topic = "Unsorted"
-        if "stanford" in full_text.lower(): topic = "Education"
-        if "passport" in full_text.lower(): topic = "Travel"
-
-        # 3. Build Record matching LanceDB Schema
-        return [{
-            "id": task.get("id"),
-            "filename": os.path.basename(file_path),
-            "file_path": file_path,
-            "file_type": ext,
-            "content": full_text.strip(),
-            "tags": [owner, topic],
-            "source": "extreme_ssd",
-            "engine_version": "2.0",
-            "timestamp": datetime.now().isoformat(),
-            "created_at": datetime.now().isoformat(),
-            "category": topic,
-            "processing_status": "completed",
-            "page_number": 0,
-            "last_modified": os.path.getmtime(file_path),
-            "issue_date": "", "expiry_date": "", "primary_date": "",
-            "country": "", "person": owner,
-            "_embedding_input": full_text.strip()[:1000] # For the embedder
-        }]
+        except Exception as e:
+            logger.error(f"❌ Critical Processing Failure for {file_path}: {str(e)}")
+            return None

@@ -39,42 +39,40 @@ performance:
 
 supported_extensions:
   # Word Processing
-  .pdf: "PDFExtractor"
-  .docx: "DocxExtractor"
-  .doc: "DocxExtractor"
-  .odt: "DocxExtractor"  # Added
-  .rtf: "TextExtractor"  # Added
-
-  # Text & Markdown
-  .txt: "TextExtractor"
-  .md: "TextExtractor"
-
-  # Spreadsheets
-  .xlsx: "SpreadsheetExtractor"
-  .xls: "SpreadsheetExtractor"
-  .csv: "SpreadsheetExtractor"
-  .ods: "SpreadsheetExtractor" # Added
+  .docx: "src.extractors.office.DocxExtractor"
+  .doc:  "src.extractors.office.DocxExtractor"
+  .odt:  "src.extractors.office.DocxExtractor"
 
   # Presentations
-  .pptx: "SlideExtractor"
-  .ppt: "SlideExtractor"   # Added (legacy support)
-  .odp: "SlideExtractor"   # Added
+  .pptx: "src.extractors.office.SlideExtractor"
+  .ppt:  "src.extractors.office.SlideExtractor"
+  .odp:  "src.extractors.office.SlideExtractor"
 
-  # Emails
-  .msg: "EmailExtractor"
-  .eml: "EmailExtractor"   # Added (Standard email format)
+  # Spreadsheets
+  .xlsx: "src.extractors.office.SpreadsheetExtractor"
+  .xls:  "src.extractors.office.SpreadsheetExtractor"
+  .csv:  "src.extractors.office.SpreadsheetExtractor"
+  .ods:  "src.extractors.office.SpreadsheetExtractor"
 
-  # Images
-  .png: "ImageExtractor"
-  .jpg: "ImageExtractor"
-  .jpeg: "ImageExtractor"
-  .heic: "ImageExtractor"
-  .webp: "ImageExtractor"  # Added
-  .tiff: "ImageExtractor"  # Added
+  # Text & Markdown
+  .txt: "src.extractors.office.TextExtractor"
+  .md:  "src.extractors.office.TextExtractor"
+  .rtf: "src.extractors.office.TextExtractor"
+
+  # Keep your other specific extractors as they were
+  .pdf:  "src.extractors.pdf.PDFExtractor"
+  .msg:  "src.extractors.email.EmailExtractor"
+  .eml:  "src.extractors.email.EmailExtractor"
+  .jpg:  "src.extractors.image.ImageExtractor"
+  .png:  "src.extractors.image.ImageExtractor"
+  .jpeg: "src.extractors.image.ImageExtractor"
+  .heic: "src.extractors.image.ImageExtractor"
+  .webp: "src.extractors.image.ImageExtractor"  # Added
+  .tiff: "src.extractors.image.ImageExtractor"  # Added
 
 # --- Containers (New) ---
-  .zip: "ArchiveExtractor"
-  .7z:  "ArchiveExtractor"
+  .zip: "src.extractors.archive.ArchiveExtractor"
+  .7z:  "src.extractors.archive.ArchiveExtractor"
 
 llm:
   provider: "local_ollama"

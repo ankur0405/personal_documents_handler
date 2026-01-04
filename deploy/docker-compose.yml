@@ -1,7 +1,6 @@
 version: '3.8'
 
 services:
-  # Message Broker Infrastructure
   zookeeper:
     image: confluentinc/cp-zookeeper:latest
     environment:
@@ -23,41 +22,42 @@ services:
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_HEAP_OPTS: "-Xms512M -Xmx1G"
 
-  # The Brain: Triage and Slicing
   producer:
     build:
-      context: .
-      dockerfile: docker/producer.Dockerfile
-    depends_on: [kafka]
+      context: ..
+      dockerfile: deploy/Dockerfile.producer
+    depends_on:
+      - kafka
     volumes:
-      # AGNOSTIC MAPPING: Maps your Mac's SSD (from .env) to the virtual container path
       - "${SCAN_ROOT}:/app/storage:ro"
-      - ./model_cache:/root/.paddlex
-      - ./data/tmp:/app/data/tmp
+      - ../data/model_cache:/root/.paddlex
+      - ../data/tmp:/app/data/tmp
     environment:
-      KAFKA_BROKER_DOCKER: kafka:29092
-      # The Python code now only looks at the virtual path
+      KAFKA_BROKER: kafka:29092
       SCAN_PATH: /app/storage
-      WORKER_COUNT: ${WORKER_COUNT:-6}
 
-  # The Muscle: OCR Workers
-  ocr-worker:
+  enricher:
     build:
-      context: .
-      dockerfile: docker/worker.Dockerfile
-    depends_on: [kafka]
+      context: ..
+      dockerfile: deploy/Dockerfile.enricher
+    depends_on:
+      - kafka
     deploy:
-      replicas: ${WORKER_COUNT:-6}
-      resources:
-        limits:
-          memory: 8G
-        reservations:
-          memory: 4G
+      replicas: 4
     volumes:
       - "${SCAN_ROOT}:/app/storage:ro"
-      - ./model_cache:/root/.paddlex
-      - ./data/tmp:/app/data/tmp
+      - ../data/model_cache:/root/.paddlex
+      - ../data/tmp:/app/data/tmp
     environment:
-      KAFKA_BROKER_DOCKER: kafka:29092
-      SCAN_PATH: /app/storage
-      WORKER_COUNT: ${WORKER_COUNT:-6}
+      KAFKA_BROKER: kafka:29092
+
+  sink:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.sink
+    depends_on:
+      - kafka
+    volumes:
+      - ../data/lancedb_store:/app/data/lancedb_store
+    environment:
+      KAFKA_BROKER: kafka:9092
