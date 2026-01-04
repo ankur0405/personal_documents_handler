@@ -1,30 +1,24 @@
-# Project Context: Personal Documents Handler (Local RAG)
+# Project Context: Personal Document Handler (PDH)
 
-## 1. Project Overview
-A high-performance, local-first RAG (Retrieval Augmented Generation) pipeline designed to ingest, classify, and index personal documents (PDFs, Images) into a LanceDB vector database. The system is optimized for macOS (Apple Silicon) and prioritizes stability over raw speed, using a "Supervisor" architecture to manage memory leaks and system resource usage.
+## Executive Summary
+A distributed, high-performance document intelligence system designed to ingest, classify, and vectorize thousands of varied personal assets (PDFs, high-res scans, images). The system utilizes an asynchronous, event-driven architecture to manage extreme memory spikes (9GB+) inherent in OCR and ML workloads.
 
-## 2. Current Architecture: "The Decoupled Supervisor"
-We have implemented a **3-Tier Decoupled Architecture** to ensure the UI remains responsive while heavy AI tasks run in the background.
+## Architectural Evolution
+- **Current Phase**: Distributed Microservices (Migration from Local Monolith).
+- **Core Strategy**: Asynchronous task orchestration via Apache Kafka to manage resource contention and backpressure.
+- **Key Validation**: Successfully prototype "Three-Phase Triage" (Standard, Slices, Jumbo) to handle memory-intensive document processing.
 
-### **The Three Tiers**
-1.  **The Orchestrator (`embedder.py`):**
-    * **Role:** The "Boss" / Middleman.
-    * **Responsibilities:** Manages the process pool, polls the `ResultQueue`, updates the UI, and writes to LanceDB.
-    * **Logic:** Uses a "Sniper" to kill workers using >4GB RAM and an "Auto-Scaler" to spawn new workers if CPU < 50%.
-2.  **The Worker (`worker.py`):**
-    * **Role:** The "Labor."
-    * **Responsibilities:** Performs OCR, Classification, and Chunking in a separate memory space.
-    * **Communication:** Throttles UI updates (max 1 msg every 0.3s) to prevent queue flooding.
-3.  **The Dashboard (`dashboard.py`):**
-    * **Role:** The "Face."
-    * **Style:** Modern "Dark Mode" theme (`#2b2b2b` background) with card-based worker rows.
-    * **Function:** Pure visualization. It receives updates from the Orchestrator, never directly from workers.
+## Technical Roadmap
+1.  **Infrastructure (Active)**: Local Kafka/Zookeeper cluster deployment via Docker Compose.
+2.  **Service Decoupling**: Separation of OCR/Classification (Workers) from Vectorization (Embedding Service).
+3.  **State Management**: Transition from local queues to persistent Kafka offsets for fault-tolerant retries.
+4.  **Advanced Features**: Implementation of semantic search, multimodal image support, and auto-categorization.
 
-## 3. Key Technical Decisions
-* **Throttled IPC:** Workers buffer their progress and only ping the main process 3 times per second to prevent "event storms."
-* **Visual Feedback:**
-    * **Global Bar:** Shows overall files processed + ETA.
-    * **Worker Cards:** Show distinct status (Filename + Progress Bar) for each process.
+## Domain Model
+- **Task**: A single unit of work (e.g., process 5 pages of a PDF).
+- **Slice**: A segmented portion of a larger document to prevent RAM bloat.
+- **Jumbo**: Files >150MB requiring sequential, high-resource processing
+
 * **Documentation:**
     * **Mermaid:** Text-based diagram in `docs/architecture/system_overview.md`.
     * **Draw.io:** Visual diagram in `docs/architecture/system_overview.drawio`.

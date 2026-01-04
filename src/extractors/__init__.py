@@ -2,6 +2,7 @@ from .pdf import PDFExtractor
 from .image import ImageExtractor
 from .office import DocxExtractor, SlideExtractor, SpreadsheetExtractor, TextExtractor
 from .email import EmailExtractor
+from .archive import ArchiveExtractor
 
 # Define what happens when someone does "from src.extractors import *"
 __all__ = [
@@ -11,5 +12,6 @@ __all__ = [
     "SlideExtractor",
     "SpreadsheetExtractor",
     "TextExtractor",
-    "EmailExtractor"
+    "EmailExtractor",
+    "ArchiveExtractor"
 ]

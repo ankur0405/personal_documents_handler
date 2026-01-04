@@ -1,91 +1,66 @@
-# System Architecture: Decoupled Supervisor Pattern
+# System Architecture: Distributed Ingestion Pipeline
 
-This document outlines the architecture for the **Personal Documents Handler**, specifically the embedding pipeline. It utilizes a "Supervisor" pattern to manage memory leaks and optimize hardware usage on Apple Silicon.
+This document outlines the enterprise-grade architecture for the **Personal Documents Handler (PDH)**. The system has evolved from a local multiprocessing monolith to a decoupled, event-driven microservice architecture using **Apache Kafka** to manage hardware resource contention on Apple Silicon.
+
+---
+
+## 1. High-Level Architecture Flow
+The following diagram illustrates the data lifecycle from initial discovery on the file system through the Kafka message backbone to final persistence in LanceDB.
 
 ```mermaid
-%%{init: {'theme': 'base', 'themeVariables': { 'primaryColor': '#2D3436', 'primaryTextColor': '#fff', 'primaryBorderColor': '#727b7f', 'lineColor': '#F8F8F2', 'secondaryColor': '#006100', 'tertiaryColor': '#fff'}}}%%
-
-graph TD
-    %% --- HOST SYSTEM LAYER ---
-    subgraph Host ["🖥️ macOS Host - Apple Silicon"]
-        style Host fill:#2d3436,stroke:#636e72,stroke-width:2px,color:#fff
-        
-        RawFiles[📂 Documents<br/><i>PDF / Images</i>]:::file
-        SysMon[⚙️ Hardware<br/><i>CPU & RAM</i>]:::hardware
+graph LR
+    subgraph Ingestion
+        A[File System] --> B[Producer Service]
     end
 
-    %% --- APP LAYER ---
-    subgraph App ["🚀 Personal Docs Handler"]
-        style App fill:#353b48,stroke:#7f8fa6,stroke-width:2px,color:#fff
-
-        %% ORCHESTRATOR
-        subgraph Supervisor [The Orchestrator]
-            style Supervisor fill:#2f3640,stroke:#dcdde1,stroke-dasharray: 5 5,color:#fff
-            
-            MainLoop{Main Event Loop}:::logic
-            Sniper[🔫 Sniper<br/><i>RAM Monitor</i>]:::alert
-            Scaler[⚖️ Auto-Scaler<br/><i>CPU Monitor</i>]:::alert
-            BatchEmbed[🧠 Embedder<br/><i>SentenceTransformer</i>]:::ai
-        end
-
-        %% UI THREAD
-        subgraph UI [Frontend Thread]
-            style UI fill:#2f3640,stroke:#dcdde1,stroke-dasharray: 5 5,color:#fff
-            Dashboard[🖥️ Dashboard<br/><i>Tkinter GUI</i>]:::ui
-        end
-
-        %% IPC
-        subgraph IPC [Inter-Process Comms]
-            style IPC fill:#353b48,stroke:none,color:#fff
-            TaskQ(Task Queue):::queue
-            ResultQ(Result Queue):::queue
-        end
-
-        %% WORKERS
-        subgraph Pool ["Process Pool (5-12 Workers)"]
-            style Pool fill:#2f3640,stroke:#44bd32,stroke-width:2px,color:#fff
-            
-            W1[👷 Worker 1]:::worker
-            W2[👷 Worker 2]:::worker
-            W_dots[...]:::worker
-            W_N[👷 Worker N]:::worker
-        end
+    subgraph Messaging_Backbone
+        B -->|raw_tasks| K1((Kafka))
+        K1 --> C[Orchestrator]
+        C -->|page_slices| K2((Kafka))
     end
 
-    %% --- STORAGE LAYER ---
-    subgraph DB [Persistent Storage]
-        style DB fill:#2d3436,stroke:#636e72,stroke-width:2px,color:#fff
-        LanceDB[(🗄️ LanceDB<br/><i>Vector Store</i>)]:::db
+    subgraph Worker_Cluster
+        K2 --> D1[Worker Pod 1]
+        K2 --> D2[Worker Pod 2]
+        K2 --> DN[Worker Pod N]
     end
 
-    %% --- LOGIC FLOWS ---
-    
-    %% 1. Ingestion
-    RawFiles ==>|1. Scan| MainLoop
-    MainLoop ==>|2. Push| TaskQ
-    TaskQ -.->|Pop| W1 & W2 & W_N
+    subgraph Persistence
+        D1 & D2 & DN -->|processed_text| K3((Kafka))
+        K3 --> E[Embedding Service]
+        E --> F[(LanceDB)]
+    end
 
-    %% 2. Worker Processing
-    W1 -->|3. Status Update| ResultQ
-    
-    %% 3. Result Handling
-    ResultQ -->|4. Read| MainLoop
-    MainLoop -->|5a. Update| Dashboard
-    MainLoop --Data--> BatchEmbed
-    BatchEmbed ==>|5b. Write| LanceDB
+    style K1 fill:#fff2cc,stroke:#d6b656
+    style K2 fill:#fff2cc,stroke:#d6b656
+    style K3 fill:#fff2cc,stroke:#d6b656
+    style F fill:#dae8fc,stroke:#6c8ebf
 
-    %% 4. Supervision
-    Sniper -.->|Kill > 4GB| W1
-    Scaler -.->|Monitor| SysMon
-    Scaler --Spawn if <50%--> Pool
+sequenceDiagram
+    autonumber
+    participant FS as External Drive
+    participant P as Ingestion Service (Producer)
+    participant K1 as Kafka: raw_tasks
+    participant O as Orchestrator (Slicer)
+    participant K2 as Kafka: process_queue
+    participant W as OCR Worker Cluster (Consumer)
+    participant K3 as Kafka: processed_content
+    participant E as Embedding Service
+    participant DB as LanceDB (Vector Store)
 
-    %% --- STYLING CLASSES ---
-    classDef file fill:#0984e3,stroke:#74b9ff,stroke-width:2px,color:#fff;
-    classDef hardware fill:#636e72,stroke:#b2bec3,stroke-width:2px,color:#fff;
-    classDef logic fill:#6c5ce7,stroke:#a29bfe,stroke-width:2px,color:#fff;
-    classDef alert fill:#d63031,stroke:#ff7675,stroke-width:2px,color:#fff;
-    classDef ai fill:#e17055,stroke:#fab1a0,stroke-width:2px,color:#fff;
-    classDef ui fill:#00b894,stroke:#55efc4,stroke-width:2px,color:#fff;
-    classDef queue fill:#fdcb6e,stroke:#ffeaa7,stroke-width:2px,color:#333;
-    classDef worker fill:#00cec9,stroke:#81ecec,stroke-width:2px,color:#333;
-    classDef db fill:#6c5ce7,stroke:#a29bfe,stroke-width:4px,color:#fff;
+    Note over P,O: Phase 1: Ingestion & Slicing
+    FS->>P: Discovery (Scan Files)
+    P->>P: Triage (Size Check > 150MB)
+    P->>K1: Publish File Metadata
+    K1-->>O: Consume Task
+    O->>O: Slicing (10+ pages -> 5-page slices)
+    O->>K2: Publish Slices
+
+    Note over W,DB: Phase 2: Processing & Persistence
+    K2-->>W: Consume Slice (Pull-based)
+    W->>W: PaddleOCR / Classification
+    W->>K3: Publish Extracted Text + Metadata
+    K3-->>E: Consume Results
+    E->>E: Vectorization (Sentence-Transformers)
+    E->>DB: table.add(chunk_data, mode="append")
+```

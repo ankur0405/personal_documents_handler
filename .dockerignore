@@ -1,0 +1,8 @@
+.venv
+.git
+__pycache__
+*.pyc
+data/
+.env
+.env.example
+code_audit.txt

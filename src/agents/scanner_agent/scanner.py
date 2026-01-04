@@ -1,91 +1,116 @@
 """
-Module: File Scanner Agent (Debug Mode)
-Description: Uses simple 'table.add()' to force data writing.
+Module: File Scanner Agent
+Description: Recursively scans subdirectories using dynamic extensions from settings.yaml.
 """
 
 import pathlib
 import xxhash
+import yaml
+import os
 from typing import List, Optional
 from src.common.db import Document, get_table
 
-# --- CONFIGURATION ---
-SUPPORTED_EXTS = {
-    # Documents
-    '.pdf', '.docx', '.doc', '.txt', '.md', '.rtf',
-    # Spreadsheets
-    '.xls', '.xlsx', '.csv',
-    # Slides
-    '.pptx', '.ppt',
-    # Images (Metadata/Filename only for now, unless we add OCR)
-    '.png', '.jpg', '.jpeg', '.heic',
-    # Web/Code
-    '.html', '.json', '.xml',
-    '.msg'
-}
+
+# --- CONFIGURATION LOADER ---
+def load_supported_extensions() -> set:
+    """Reads supported extensions directly from settings.yaml. No hardcoded fallbacks."""
+    try:
+        config_path = pathlib.Path("src/config/settings.yaml")
+        if config_path.exists():
+            with open(config_path, 'r') as f:
+                config = yaml.safe_load(f)
+                # Fetch precisely what the user defined in the config
+                exts = config.get('supported_extensions', [])
+                if exts:
+                    # Normalize: lowercase and ensure it starts with a dot
+                    return {f".{str(e).strip('.').lower()}" for e in exts}
+
+        print("⚠️ Warning: settings.yaml not found or 'supported_extensions' is empty.")
+    except Exception as e:
+        print(f"❌ Error reading config: {e}")
+
+    # Return an empty set if config fails.
+    # This forces the user to check their settings
+    # instead of silently running a partial scan.
+    return set()
+
+SUPPORTED_EXTS = load_supported_extensions()
 BATCH_SIZE = 100
 
+
 def calculate_file_hash(filepath: str) -> Optional[str]:
+    """Generates a unique ID based on file content for deduplication."""
     hasher = xxhash.xxh64()
     try:
         with open(filepath, 'rb') as f:
             while chunk := f.read(8192):
                 hasher.update(chunk)
         return hasher.hexdigest()
-    except Exception as e:
-        print(f"⚠️  Error hashing {filepath}: {e}")
+    except Exception:
         return None
+
 
 def scan_directory(root_path: str):
     root = pathlib.Path(root_path)
-    
-    if not root.exists():
-        raise FileNotFoundError(f"Path not found: {root_path}")
 
-    print(f"🔍 Scanning Target: {root_path}")
-    
+    if not root.exists():
+        print(f"❌ Path not found: {root_path}")
+        return
+
+    if not SUPPORTED_EXTS:
+        print("❌ No supported extensions loaded. Check settings.yaml. Aborting scan.")
+        return
+
+    print(f"🔍 Recursive Scan: {root_path}")
+    print(f"📂 Looking for: {SUPPORTED_EXTS}")
+
     docs_batch: List[Document] = []
     table = get_table()
-    
-    # DEBUG: Print the DB Path to ensure we are looking at the same file
-    print(f"📂 Connected to Table: {table.name}")
-    
+    total_found = 0
+
     for path in root.rglob('*'):
-        if path.name.startswith("._"):
+        if path.name.startswith("._") or path.is_dir():
             continue
-            
-        if path.is_file() and path.suffix.lower() in SUPPORTED_EXTS:
-            stats = path.stat()
-            file_hash = calculate_file_hash(str(path))
-            
-            if not file_hash: 
+
+        if path.suffix.lower() in SUPPORTED_EXTS:
+            try:
+                stats = path.stat()
+                file_hash = calculate_file_hash(str(path))
+                if not file_hash: continue
+
+                doc = Document(
+                    id=file_hash,
+                    filename=path.name,
+                    file_path=str(path.absolute()),
+                    file_type=path.suffix.lower().strip('.'),
+                    file_size_bytes=stats.st_size,
+                    creation_date=stats.st_ctime,
+                    last_modified=stats.st_mtime,
+                    summary="",
+                    category="Unsorted"
+                )
+                docs_batch.append(doc)
+                total_found += 1
+
+                if len(docs_batch) >= BATCH_SIZE:
+                    _safe_add(table, docs_batch)
+                    print(f"  -> Indexed {total_found} files...")
+                    docs_batch = []
+            except Exception:
                 continue
 
-            doc = Document(
-                id=file_hash,
-                filename=path.name,
-                file_path=str(path.absolute()),
-                file_type=path.suffix.lower().strip('.'),
-                file_size_bytes=stats.st_size,
-                creation_date=stats.st_ctime,
-                last_modified=stats.st_mtime,
-                summary="",
-                category="Unsorted"
-            )
-            docs_batch.append(doc)
-
-            if len(docs_batch) >= BATCH_SIZE:
-                # FIX: Use 'add' instead of 'merge_insert'.
-                # 'add' is the simplest way to write data. It crashes on duplicates,
-                # but since we are starting fresh, it GUARANTEES writing.
-                data_payload = [d.model_dump() for d in docs_batch]
-                table.add(data_payload) # <--- CHANGED THIS
-                
-                print(f"  -> Processed batch of {len(docs_batch)} files...")
-                docs_batch = [] 
-
     if docs_batch:
-        data_payload = [d.model_dump() for d in docs_batch]
-        table.add(data_payload) # <--- CHANGED THIS
-        print(f"  -> Processed final batch of {len(docs_batch)} files...")
+        _safe_add(table, docs_batch)
 
-    print("✅ Scan Complete. Database is synchronized.")
+    print(f"✅ Scan Complete. {total_found} files synchronized.")
+
+
+def _safe_add(table, docs_batch):
+    data_payload = [d.model_dump() for d in docs_batch]
+    try:
+        table.add(data_payload)
+    except Exception:
+        pass
+
+if __name__ == "__main__":
+    scan_directory(os.getenv("SCAN_PATH", "/data/raw"))

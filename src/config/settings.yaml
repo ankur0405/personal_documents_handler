@@ -1,16 +1,12 @@
 system:
-  autotune: true
-  # If autotune is True, this max_workers is a "soft limit" or fallback.
-
+  autotune: true # If autotune is True, this max_workers is a "soft limit" or fallback.
   cleanup_temp: true  # Set to false if you want to inspect unzipped files
 
-  # Autotune will calculate the real number based on CPU cores.
-  max_workers: 4
-
+  # TEXT SPLITTING
   chunk_size: 1000
   chunk_overlap: 100
 
-  # DATA CONSISTENCY (Must match your DB)
+  # MODEL SPECS
   model_name: "BAAI/bge-small-en-v1.5"
   model_dimension: 384
 
@@ -108,11 +104,9 @@ hardware_profiles:
 # --- PATHS ---
 paths:
   # The code expects these specific keys
-  raw_data: "/Volumes/Extreme SSD/Documents"
-  lancedb: "data/lancedb_store"
-  # Retaining original keys just in case other modules use them
-  target_folder: "/Volumes/Extreme SSD/Documents"
-  db_path: "data/lancedb_store"
+  raw_data: "/app/storage"
+  lancedb: "/app/data/lancedb_store"
+  model_cache: "/app/data/model_cache"
 
 # --- SUPERVISOR SETTINGS ---
 # New section to control the Timeout and Sniper logic

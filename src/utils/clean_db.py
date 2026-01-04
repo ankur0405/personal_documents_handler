@@ -1,49 +1,61 @@
-import sys
 import os
-import pandas as pd
+from src.config.loader import config
+from src.common.db import DatabaseManager
+from src.common.utils import get_logger
 
-# Fix path to allow importing from src
-sys.path.append(os.getcwd())
+logger = get_logger(__name__)
 
-from src.common.db import get_table
 
-def force_clean_duplicates():
-    print("--- 🧹 AGGRESSIVE DATABASE CLEANER ---")
-    
-    table = get_table()
+def remove_orphans_and_duplicates():
+    """
+    Synchronizes the database with the physical disk by removing records
+    of files that have been deleted or moved.
+    """
+    print("--- 🧹 AGGRESSIVE DATABASE RECONCILIATION ---")
+
+    # Initialize DB using centralized config
+    db_manager = DatabaseManager(db_path=config.db_path)
+    table = db_manager.initialize_table()
     df = table.to_pandas()
-    
+
     if df.empty:
-        print("⚠️ Database is empty.")
+        print("⚠️ Database is empty. Nothing to clean.")
         return
 
-    print(f"📊 Current Total Rows: {len(df)}")
-    
-    # 1. Deduplicate by ID
-    # If two files have the same ID (Content Hash), we keep the FIRST one and drop the rest.
-    # This removes both "True Duplicates" and "Renamed Copies".
-    df_clean = df.drop_duplicates(subset=['id'], keep='first')
-    
-    duplicates_removed = len(df) - len(df_clean)
-    
-    if duplicates_removed == 0:
-        print("✅ No duplicates found based on ID.")
+    total_start = len(df)
+
+    # 1. ORPHAN DETECTION: Check if file still exists on disk
+    # We create a mask for rows where the file_path is no longer valid
+    df['exists'] = df['file_path'].apply(lambda x: os.path.exists(x))
+    df_orphans = df[df['exists'] == False]
+
+    # 2. DUPLICATE DETECTION: Check for identical content hashes
+    # Keep the first occurrence of each unique ID
+    df_valid = df[df['exists'] == True].drop_duplicates(subset=['id'], keep='first')
+
+    orphans_count = len(df_orphans)
+    duplicates_count = (total_start - orphans_count) - len(df_valid)
+
+    if orphans_count == 0 and duplicates_count == 0:
+        print("✅ Database is perfectly synchronized with disk.")
         return
 
-    print(f"🔥 Found {duplicates_removed} conflicting IDs.")
-    print("   (This includes identical files saved with different names)")
+    print(f"🔥 Found {orphans_count} Orphaned records (Files deleted from disk).")
+    print(f"🔥 Found {duplicates_count} Duplicate records (Identical content hashes).")
 
-    # 2. The Nuclear Reset
-    # We wipe the table completely and re-insert ONLY the unique rows.
-    print("DATA OPERATION: Wiping table and re-inserting unique records...")
-    
+    # 3. RE-INSERTION (The Nuclear Reset)
+    # We wipe and re-insert to ensure index integrity
     try:
-        table.delete("true") # Deletes everything
-        table.add(df_clean.to_dict('records'))
-        print(f"✅ Success! Database now contains {len(df_clean)} unique records.")
-        
+        table.delete("true")  # Clear all records
+        # Remove the temporary 'exists' column before saving
+        final_df = df_valid.drop(columns=['exists'])
+        table.add(final_df.to_dict('records'))
+        print(f"✅ Success! Database now contains {len(final_df)} verified records.")
+        logger.info(f"Cleanup complete: Removed {orphans_count} orphans and {duplicates_count} duplicates.")
+
     except Exception as e:
-        print(f"❌ Critical Error during wipe/insert: {e}")
+        print(f"❌ Critical Error during database reconciliation: {e}")
+        logger.error(f"Database cleanup failed: {e}")
 
 if __name__ == "__main__":
-    force_clean_duplicates()
+    remove_orphans_and_duplicates()
